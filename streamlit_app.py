@@ -105,6 +105,7 @@ def play_correct_sound_and_confetti():
           o.connect(g); g.connect(ctx.destination);
           o.start(t+d); o.stop(t+d+du+0.03);
         }
+        // 간단한 빵파레: 도-솔-높은 도
         beep(523.25,0.00,0.12); beep(783.99,0.12,0.12); beep(1046.5,0.24,0.18);
         const el = document.getElementById('confetti');
         setTimeout(()=>{ el.style.opacity=1; el.style.bottom='40%'; }, 10);
@@ -179,7 +180,7 @@ defaults = dict(
     page="home", started=False, score=0, best=0, used=set(), current=(None,None),
     duration=90, threshold=0.85, hint_used_total=0, show_hint=False,
     end_time=None, reveal_text="", reveal_success=False, just_correct=False,
-    clear_input_pending=False   # ✅ 입력 초기화 지시 플래그
+    clear_input_pending=False
 )
 for k,v in defaults.items():
     if k not in ss: ss[k]=v
@@ -192,7 +193,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ====================== 콜백 (여기서는 위젯 값을 직접 바꾸지 않음) ======================
+# ====================== 콜백 ======================
 def start_game():
     ss.started = True
     ss.score = 0
@@ -202,7 +203,7 @@ def start_game():
     ss.end_time = time.time() + ss.duration
     ss.page = "game"
     ss.show_hint = False
-    ss.clear_input_pending = True  # ✅ 다음 렌더에서 입력칸 비우기
+    ss.clear_input_pending = True
 
 def use_hint():
     if ss.hint_used_total < 2 and not ss.show_hint and ss.started:
@@ -210,24 +211,30 @@ def use_hint():
         ss.show_hint = True
 
 def submit_answer():
+    """엔터/제출 버튼 공통 처리: 제출하면 무조건 다음 문제로"""
     if not ss.started or not ss.current[0]:
         return
     prefix, answer = ss.current
     user = ss.get(ANSWER_KEY, "")
     sim = fuzzy_match(user, answer)
     is_correct = (sim >= ss.threshold)
+
+    # 정답 공개
     ss.reveal_text = f"정답: {answer}"
     ss.reveal_success = is_correct
+
+    # 점수 & 다음 문제로 이동 (정오 상관없이 이동)
     if is_correct:
         ss.score += 1
         ss.best = max(ss.best, ss.score)
-        ss.used.add(prefix)
-        ss.current = pick_prompt(ss.used)
-        ss.show_hint = False
-        ss.clear_input_pending = True  # ✅ 여기서 바로 비우지 않고 플래그만
         ss.just_correct = True
     else:
         ss.just_correct = False
+
+    ss.used.add(prefix)
+    ss.current = pick_prompt(ss.used)
+    ss.show_hint = False
+    ss.clear_input_pending = True   # 입력칸 초기화는 다음 렌더에서
 
 def skip_question():
     if not ss.started: return
@@ -235,18 +242,17 @@ def skip_question():
     ss.used.add(prefix)
     ss.current = pick_prompt(ss.used)
     ss.show_hint = False
-    ss.reveal_text = ""               # 스킵 시 정답 미공개
-    ss.clear_input_pending = True     # ✅ 입력칸 비우기 예약
+    ss.reveal_text = ""             # 스킵 시 정답 미공개
+    ss.clear_input_pending = True
 
 def go_home():
     ss.page = "home"
     ss.started = False
     ss.reveal_text = ""
     ss.show_hint = False
-    # 소리 정지
     play_tick_sound(False)
 
-# ====================== HOME (메인 시작 화면) ======================
+# ====================== HOME (메인 시작 화면 유지) ======================
 if ss.page == "home":
     play_tick_sound(False)
     st.markdown("<h1 style='text-align:center'>🧩 속담 이어말하기 게임</h1>", unsafe_allow_html=True)
@@ -265,9 +271,9 @@ if ss.page == "game":
     if hasattr(st, "autorefresh"):
         st.autorefresh(interval=1000, key="__ticker__")
 
-    # ✅ 위젯 렌더 전에, 입력칸 비우기 플래그 반영
+    # 입력칸 초기화 예약이 있으면, 위젯 생성 전에 수행
     if ss.clear_input_pending:
-        ss[ANSWER_KEY] = ""         # 이제 안전: 아직 위젯이 생성되기 전
+        ss[ANSWER_KEY] = ""
         ss.clear_input_pending = False
 
     # 문제 보장
@@ -282,13 +288,13 @@ if ss.page == "game":
         col = st.columns([1,2,1])[1]
         with col:
             st.button("다시 시작", use_container_width=True, on_click=start_game)
-            st.button("🏠 첫 화면", use_container_width=True, on_click=go_home)
+            # 요청: 게임 화면의 '첫 화면' 버튼은 제거(홈으로 가는 버튼 제공 X)
     else:
         # 1) 상단 상태 카드
         render_stats(ss.score, ss.end_time or time.time(), ss.hint_used_total)
         play_tick_sound(ss.started and remaining_server > 0)
 
-        # 2) 문제 박스
+        # 2) 문제 박스 (위쪽, 실제 문장만)
         _, mid, _ = st.columns([1, 2, 1])
         with mid:
             prefix, answer = ss.current
@@ -299,40 +305,32 @@ if ss.page == "game":
             </div>
             """, unsafe_allow_html=True)
 
-        # 3) 정답 입력/버튼 박스 (Enter 제출 + 스킵 옆 힌트)
+        # 3) 정답 입력/버튼 박스 (Enter 제출 + 스킵 옆 힌트)  —— ‘첫 화면’ 버튼 제거
         _, mid2, _ = st.columns([1, 2, 1])
         with mid2:
             st.markdown("""
             <div style="border:1px solid #e9ecef; border-radius:14px; padding:16px 18px;
                         box-shadow:0 2px 8px rgba(0,0,0,.04); margin-top:12px;">
               <div style="text-align:center; font-weight:700; margin-bottom:8px">
-                정답을 입력한 뒤 Enter 키를 누르세요
+                정답을 입력한 뒤 Enter 키를 누르거나 '제출'을 클릭하세요
               </div>
             """, unsafe_allow_html=True)
 
-            # Enter 제출: 폼 + 숨긴 버튼
+            # 폼: 엔터/버튼 동일 처리
             with st.form("answer_form", clear_on_submit=False):
                 st.text_input("정답", key=ANSWER_KEY, label_visibility="collapsed",
                               placeholder="예) 밤말은 쥐가 듣는다", help="오타 조금은 괜찮아요!")
-                submitted = st.form_submit_button("제출")
+                submitted = st.form_submit_button("제출", use_container_width=True)
                 if submitted:
                     submit_answer()
 
-            # 제출 버튼 숨기기
-            st.markdown("""
-            <style>
-              div[data-testid="stForm"] div.stButton button { display: none; }
-            </style>
-            """, unsafe_allow_html=True)
-
-            colH, colS, colHome = st.columns([1,1,1])
+            colH, colS = st.columns([1,1])
             colH.button("💡 힌트", use_container_width=True,
                         disabled=(not ss.started) or (ss.hint_used_total>=2) or ss.show_hint or remaining_server==0,
                         on_click=use_hint)
             colS.button("스킵", use_container_width=True,
                         disabled=(not ss.started or remaining_server==0),
                         on_click=skip_question)
-            colHome.button("🏠 첫 화면", use_container_width=True, on_click=go_home)
 
             if ss.show_hint:
                 st.info(f"힌트: **{chosung_hint(answer)}**")
