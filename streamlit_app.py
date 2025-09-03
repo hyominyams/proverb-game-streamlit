@@ -4,12 +4,7 @@ from typing import Dict, Tuple
 import streamlit as st
 from streamlit.components.v1 import html
 
-# ---------------------- 호환 rerun ----------------------
-def safe_rerun():
-    if hasattr(st, "rerun"): st.rerun()
-    elif hasattr(st, "experimental_rerun"): st.experimental_rerun()
-
-# ---------------------- 데이터 ----------------------
+# ====================== 데이터 ======================
 PROVERBS: Dict[str, str] = {
     "낮말은 새가 듣고": "밤말은 쥐가 듣는다",
     "가는 말이 고와야": "오는 말이 곱다",
@@ -38,7 +33,7 @@ PROVERBS: Dict[str, str] = {
     "팔은": "안으로 굽는다",
 }
 
-# ---------------------- 유틸 ----------------------
+# ====================== 유틸 ======================
 def normalize(t: str) -> str:
     s = unicodedata.normalize("NFKC", t or "")
     s = "".join(ch for ch in s if ch.isalnum() or ord(ch) > 0x3130)
@@ -66,8 +61,9 @@ def pick_prompt(used:set) -> Tuple[str,str]:
     p = random.choice(remain)
     return p, PROVERBS[p]
 
-# ---------------------- 효과음/이펙트 ----------------------
+# ====================== 사운드/이펙트 ======================
 def play_tick_sound(running: bool):
+    # 1초마다 '틱' 소리. running=False로 호출하면 정지
     if running:
         html("""
         <script>
@@ -92,7 +88,7 @@ def play_tick_sound(running: bool):
         html("""<script> if(window._tickInterval){clearInterval(window._tickInterval);window._tickInterval=null;} </script>""", height=0)
 
 def play_correct_sound_and_confetti():
-    # 짧은 빵파레 + 아래에서 올라오는 이펙트 + 풍선
+    # 풍선 + 아래서 위로 빵파레 아이콘 + 짧은 팬파레
     st.balloons()
     html("""
     <div id="confetti" style="
@@ -101,8 +97,7 @@ def play_correct_sound_and_confetti():
     <script>
       (function(){
         const AC = window.AudioContext || window.webkitAudioContext;
-        const ctx = new AC();
-        const t = ctx.currentTime;
+        const ctx = new AC(); const t = ctx.currentTime;
         function beep(f, d, du){
           const o=ctx.createOscillator(), g=ctx.createGain();
           o.type='triangle'; o.frequency.value=f;
@@ -112,9 +107,8 @@ def play_correct_sound_and_confetti():
           o.connect(g); g.connect(ctx.destination);
           o.start(t+d); o.stop(t+d+du+0.03);
         }
-        // 간단한 파레드: 도-솔-도'
+        // 간단한 빵파레: 도-솔-높은 도
         beep(523.25,0.00,0.12); beep(783.99,0.12,0.12); beep(1046.5,0.24,0.18);
-
         const el = document.getElementById('confetti');
         setTimeout(()=>{ el.style.opacity=1; el.style.bottom='40%'; }, 10);
         setTimeout(()=>{ el.style.opacity=0; el.remove(); }, 900);
@@ -145,19 +139,32 @@ def flash_answer_overlay(text:str, success:bool):
     </script>
     """, height=0)
 
-def render_timer(end_ts: float):
-    # 브라우저에서 1초마다 표시 갱신(서버 지연 체감 최소화)
-    now_rem = max(0, int(round(end_ts - time.time())))
+def render_stats(score:int, end_ts:float, hints:int):
+    # 커스텀 카드 UI (크기·위치 통일) + 큰 타이머(2.2rem)
+    now_rem = max(0, int(round(end_ts - time.time()))) if end_ts else 0
     html(f"""
-    <div style="text-align:center; font-weight:700" id="timer_div">{now_rem}s</div>
+    <div class="stats">
+      <div class="card"><div class="label">점수</div><div class="value">{score}</div></div>
+      <div class="card"><div class="label">남은 시간</div><div class="value"><span id="timer_div">{now_rem}</span>s</div></div>
+      <div class="card"><div class="label">힌트 사용</div><div class="value">{hints}/2</div></div>
+    </div>
+    <style>
+      .stats {{ display:flex; gap:12px; justify-content:center; margin:8px 0 6px; }}
+      .card {{ padding:12px 16px; border:1px solid #e9ecef; border-radius:12px;
+               min-width:160px; text-align:center; box-shadow:0 2px 8px rgba(0,0,0,.04); }}
+      .card .label {{ font-size:.95rem; color:#666; margin-bottom:6px; }}
+      .card .value {{ font-size:2.2rem; font-weight:800; line-height:1.1; }}
+      #timer_div {{ font-size:2.2rem; }}
+    </style>
     <script>
       (function(){{
-        const end = {int(end_ts*1000)};
+        const end = {int(end_ts*1000) if end_ts else 0};
         function update(){{
+          if (!end) return;
           const now = Date.now();
           let rem = Math.max(0, Math.round((end - now)/1000));
           const el = document.getElementById('timer_div');
-          if (el) el.textContent = rem + 's';
+          if (el) el.textContent = rem.toString();
         }}
         update();
         if (!window.__timerInterval) {{
@@ -165,9 +172,9 @@ def render_timer(end_ts: float):
         }}
       }})();
     </script>
-    """, height=30)
+    """, height=110)
 
-# ---------------------- 상태 ----------------------
+# ====================== 상태 ======================
 st.set_page_config(page_title="속담 이어말하기", page_icon="🧩", layout="centered")
 ss = st.session_state
 ANSWER_KEY = "answer_box"
@@ -180,7 +187,7 @@ defaults = dict(
 for k,v in defaults.items():
     if k not in ss: ss[k]=v
 
-# ---------------------- 콜백 ----------------------
+# ====================== 콜백 (콜백 안에서 st.rerun 호출 없음) ======================
 def start_game():
     ss.started = True
     ss.score = 0
@@ -190,17 +197,16 @@ def start_game():
     ss.end_time = time.time() + ss.duration
     ss.page = "game"
     ss.show_hint = False
-    ss[ANSWER_KEY] = ""  # 콜백이므로 안전
-    safe_rerun()
+    ss[ANSWER_KEY] = ""  # 콜백에서만 위젯값 변경 → 안전
 
 def use_hint():
     if ss.hint_used_total < 2 and not ss.show_hint and ss.started:
         ss.hint_used_total += 1
         ss.show_hint = True
-        safe_rerun()
 
 def submit_answer():
-    # 현재 문제와 유저 입력 획득
+    if not ss.started or not ss.current[0]:
+        return
     prefix, answer = ss.current
     user = ss.get(ANSWER_KEY, "")
     sim = fuzzy_match(user, answer)
@@ -216,12 +222,10 @@ def submit_answer():
         ss.used.add(prefix)
         ss.current = pick_prompt(ss.used)
         ss.show_hint = False
-        ss[ANSWER_KEY] = ""      # 콜백 내에서 안전
-        ss.just_correct = True   # 다음 렌더에서 이펙트+사운드
+        ss[ANSWER_KEY] = ""
+        ss.just_correct = True
     else:
         ss.just_correct = False
-
-    safe_rerun()
 
 def skip_question():
     if not ss.started: return
@@ -229,17 +233,18 @@ def skip_question():
     ss.used.add(prefix)
     ss.current = pick_prompt(ss.used)
     ss.show_hint = False
-    ss[ANSWER_KEY] = ""          # 콜백 내에서 안전
-    ss.reveal_text = ""          # 스킵 시 정답 공개 X (원하면 켜기)
-    safe_rerun()
+    ss[ANSWER_KEY] = ""
+    ss.reveal_text = ""  # 스킵 시 정답 미공개
 
 def go_home():
     ss.page = "home"
     ss.started = False
-    safe_rerun()
+    ss.reveal_text = ""
+    play_tick_sound(False)  # 틱 사운드 정지
 
-# ---------------------- HOME ----------------------
+# ====================== HOME ======================
 if ss.page == "home":
+    play_tick_sound(False)
     st.markdown("<h1 style='text-align:center'>🧩 속담 이어말하기 게임</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align:center'>제한 시간 안에 많이 맞혀보세요! (오타 일부 허용)</p>", unsafe_allow_html=True)
     _, mid, _ = st.columns([1,2,1])
@@ -250,9 +255,9 @@ if ss.page == "home":
         st.button("▶️ 게임 시작", use_container_width=True, on_click=start_game)
     st.caption("※ 브라우저 자동재생 정책상 소리는 첫 클릭 이후 활성화됩니다.")
 
-# ---------------------- GAME ----------------------
+# ====================== GAME ======================
 if ss.page == "game":
-    # 1초마다 서버도 재실행(종료 판정용). 너무 튀면 1000→1500으로 조절
+    # 서버도 1초 주기로 재실행(종료 판정/상태 동기화)
     if hasattr(st, "autorefresh"):
         st.autorefresh(interval=1000, key="__ticker__")
 
@@ -260,63 +265,70 @@ if ss.page == "game":
     if not ss.current or not ss.current[0]:
         ss.current = pick_prompt(ss.used)
 
-    # 중앙 상단 블록
-    _, mid, _ = st.columns([1, 2, 1])
-    with mid:
-        # 상단 메트릭 + 타이머
-        left, center, right = st.columns([1,1,1])
-        with left:  st.metric("점수", ss.score)
-        with center:
-            st.markdown("<div style='text-align:center'>남은 시간</div>", unsafe_allow_html=True)
-            if ss.end_time is None: ss.end_time = time.time() + ss.duration
-            render_timer(ss.end_time)
-        with right: st.metric("힌트 사용", f"{ss.hint_used_total}/2")
+    # 타임아웃 판정(서버 기준)
+    remaining_server = max(0, int(round(ss.end_time - time.time()))) if ss.end_time else 0
+    if ss.started and remaining_server == 0:
+        play_tick_sound(False)
+        st.markdown("### ⏰ TIME OUT!")
+        st.success(f"최종 점수: {ss.score}점 / 힌트 사용 {ss.hint_used_total}/2")
+        col = st.columns([1,2,1])[1]
+        with col:
+            st.button("다시 시작", use_container_width=True, on_click=start_game)
+            st.button("🏠 첫 화면", use_container_width=True, on_click=go_home)
+    else:
+        # 상단 상태 카드(점수/남은시간/힌트사용)
+        render_stats(ss.score, ss.end_time or time.time(), ss.hint_used_total)
 
-        # 틱 사운드 (클라이언트 자율)
-        remaining_server = max(0, int(round(ss.end_time - time.time())))
+        # 틱 사운드
         play_tick_sound(ss.started and remaining_server > 0)
 
-        # 힌트 버튼(정중앙에 가깝게)
-        st.button(f"💡 힌트(초성) 보기 (남은 {max(0,2-ss.hint_used_total)}/2)",
-                  use_container_width=True,
-                  disabled=(not ss.started) or (ss.hint_used_total>=2) or ss.show_hint or remaining_server==0,
-                  on_click=use_hint)
+        # ===== 문제 카드 (상태 카드 바로 아래, 중앙 크게) =====
+        _, mid, _ = st.columns([1, 2, 1])
+        with mid:
+            prefix, answer = ss.current
+            st.markdown("""
+            <div style="border:1px solid #e9ecef; border-radius:14px; padding:18px; 
+                        box-shadow:0 2px 8px rgba(0,0,0,.04); margin-top:4px;">
+                <div style="text-align:center; font-size:2.2rem; font-weight:800;">문제</div>
+            """, unsafe_allow_html=True)
+            st.markdown(
+                f"<div style='text-align:center; font-size:2.2rem; font-weight:800; margin-top:6px'>{prefix}</div>",
+                unsafe_allow_html=True,
+            )
+            # 힌트 버튼 + 힌트 표시
+            st.button(f"💡 힌트(초성) 보기 (남은 {max(0,2-ss.hint_used_total)}/2)",
+                      use_container_width=True,
+                      disabled=(not ss.started) or (ss.hint_used_total>=2) or ss.show_hint or remaining_server==0,
+                      on_click=use_hint)
+            if ss.show_hint:
+                st.info(f"힌트: **{chosung_hint(answer)}**")
+            st.markdown("</div>", unsafe_allow_html=True)
 
-        # ====== 문제/입력칸 (정중앙 상단) ======
-        prefix, answer = ss.current
-        st.markdown(
-            f"<div style='text-align:center; font-size:2.2rem; font-weight:800; margin-top:8px'>{prefix}</div>",
-            unsafe_allow_html=True,
-        )
+        # ===== 정답 입력/버튼 카드 (더 하단) =====
+        _, mid2, _ = st.columns([1, 2, 1])
+        with mid2:
+            st.markdown("""
+            <div style="border:1px solid #e9ecef; border-radius:14px; padding:18px; 
+                        box-shadow:0 2px 8px rgba(0,0,0,.04); margin-top:12px;">
+                <div style="text-align:center; font-weight:700; margin-bottom:6px">정답을 입력해 보세요</div>
+            """, unsafe_allow_html=True)
 
-        st.markdown("<div style='text-align:center; margin-top:6px'>정답을 입력해 보세요</div>", unsafe_allow_html=True)
-        st.text_input("정답", key=ANSWER_KEY, label_visibility="collapsed",
-                      placeholder="예) 밤말은 쥐가 듣는다", help="오타 조금은 괜찮아요!")
+            st.text_input("정답", key=ANSWER_KEY, label_visibility="collapsed",
+                          placeholder="예) 밤말은 쥐가 듣는다", help="오타 조금은 괜찮아요!")
 
-        colA, colB, colC = st.columns([1,1,1])
-        colA.button("제출", use_container_width=True, disabled=(not ss.started or remaining_server==0),
-                    on_click=submit_answer)
-        colB.button("스킵",  use_container_width=True, disabled=(not ss.started or remaining_server==0),
-                    on_click=skip_question)
-        colC.button("🏠 첫 화면", use_container_width=True, on_click=go_home)
+            colA, colB, colC = st.columns([1,1,1])
+            colA.button("제출", use_container_width=True, disabled=(not ss.started or remaining_server==0),
+                        on_click=submit_answer)
+            colB.button("스킵",  use_container_width=True, disabled=(not ss.started or remaining_server==0),
+                        on_click=skip_question)
+            colC.button("🏠 첫 화면", use_container_width=True, on_click=go_home)
 
-        # ====== 구분선 (문제영역 아래) ======
-        st.markdown("<hr>", unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
 
-        # 정답 공개 오버레이(다음 렌더에서 표시하도록 플래그 기반)
+        # ===== 제출 직후 정답 공개 / 축하이펙트 =====
         if ss.reveal_text:
             flash_answer_overlay(ss.reveal_text, ss.reveal_success)
-            # 한 번만 표시
             ss.reveal_text = ""
-
-        # 정답 맞춘 직후 이펙트/사운드
         if ss.just_correct:
             play_correct_sound_and_confetti()
             ss.just_correct = False
-
-        # 서버 측 시간 종료 → 자동 종료
-        if ss.started and remaining_server == 0:
-            st.warning("⏰ 시간이 종료되었습니다! 첫 화면으로 돌아갑니다.")
-            ss.started = False
-            ss.page = "home"
-
