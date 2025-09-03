@@ -153,14 +153,18 @@ def play_correct_sound():
     )
 
 def flash_answer(text: str, success: bool):
+    # 녹색(성공) / 빨강(실패)
     color = "#10b981" if success else "#ef4444"
+
+    # ⚠️ f-string 안의 JS/CSS 중괄호는 모두 {{ }} 로 이스케이프!
+    from streamlit.components.v1 import html
     html(
         f"""
         <style>
           @keyframes pop {{
-            0% {{ transform: scale(.9); opacity:.0; }}
-            50% {{ transform: scale(1.03); opacity:1; }}
-            100%{{ transform: scale(1.0); opacity:1; }}
+            0%  {{ transform: scale(.9);  opacity:.0; }}
+            50% {{ transform: scale(1.03); opacity:1;  }}
+            100%{{ transform: scale(1.0); opacity:1;  }}
           }}
         </style>
         <div id="ansflash" style="
@@ -174,11 +178,16 @@ def flash_answer(text: str, success: bool):
             {text}
         </div>
         <script>
-          setTimeout(()=>{ const el = document.getElementById('ansflash'); if(el) el.remove(); }, 1200);
+          // ⬇ 여기 중괄호를 꼭 {{ }} 로!
+          setTimeout(() => {{ 
+            const el = document.getElementById('ansflash'); 
+            if (el) el.remove(); 
+          }}, 1200);
         </script>
         """,
         height=0,
     )
+
 
 # ---------------------- 페이지/상태 ----------------------
 st.set_page_config(page_title="속담 이어말하기", page_icon="🧩", layout="centered")
