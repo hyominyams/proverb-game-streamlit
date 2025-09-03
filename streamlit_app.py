@@ -284,7 +284,7 @@ if ss.page == "game":
 
             with st.form("answer_form", clear_on_submit=True):  # ✅ 제출 후에만 입력칸이 비워짐
                 st.text_input("정답", key=ANSWER_KEY, label_visibility="collapsed",
-                              placeholder="예) 밤말은 쥐가 듣는다", help="오타 조금은 괜찮아요!")
+                               help="오타 조금은 괜찮아요!")
                 submitted = st.form_submit_button("제출", use_container_width=True)
                 if submitted:
                     process_submission(st.session_state.get(ANSWER_KEY, ""))
