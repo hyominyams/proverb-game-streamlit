@@ -4,7 +4,7 @@ from typing import Dict, Tuple
 import streamlit as st
 from streamlit.components.v1 import html
 
-# ====================== 데이터 ======================
+# -------------------- 데이터 --------------------
 PROVERBS: Dict[str, str] = {
     "낮말은 새가 듣고": "밤말은 쥐가 듣는다",
     "가는 말이 고와야": "오는 말이 곱다",
@@ -33,7 +33,7 @@ PROVERBS: Dict[str, str] = {
     "팔은": "안으로 굽는다",
 }
 
-# ====================== 유틸 ======================
+# -------------------- 유틸 --------------------
 def normalize(t: str) -> str:
     s = unicodedata.normalize("NFKC", t or "")
     s = "".join(ch for ch in s if ch.isalnum() or ord(ch) > 0x3130)
@@ -61,7 +61,7 @@ def pick_prompt(used:set) -> Tuple[str,str]:
     p = random.choice(remain)
     return p, PROVERBS[p]
 
-# ====================== 사운드/이펙트 ======================
+# -------------------- 사운드/이펙트 --------------------
 def play_tick_sound(running: bool):
     if running:
         html("""
@@ -105,7 +105,6 @@ def play_correct_sound_and_confetti():
           o.connect(g); g.connect(ctx.destination);
           o.start(t+d); o.stop(t+d+du+0.03);
         }
-        // 간단한 빵파레: 도-솔-높은 도
         beep(523.25,0.00,0.12); beep(783.99,0.12,0.12); beep(1046.5,0.24,0.18);
         const el = document.getElementById('confetti');
         setTimeout(()=>{ el.style.opacity=1; el.style.bottom='40%'; }, 10);
@@ -171,7 +170,7 @@ def render_stats(score:int, end_ts:float, hints:int):
     </script>
     """, height=118)
 
-# ====================== 상태 ======================
+# -------------------- 상태 --------------------
 st.set_page_config(page_title="속담 이어말하기", page_icon="🧩", layout="centered")
 ss = st.session_state
 ANSWER_KEY = "answer_box"
@@ -185,7 +184,7 @@ defaults = dict(
 for k,v in defaults.items():
     if k not in ss: ss[k]=v
 
-# 전역 스타일(상단 잘림 방지 + 입력칸 크게)
+# 전역 스타일
 st.markdown("""
 <style>
 .block-container { padding-top: 1.6rem; }  /* 상단 잘림 방지 */
@@ -193,7 +192,30 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ====================== 콜백 ======================
+# -------------------- 콜백(공통 제출 처리) --------------------
+def _process_submission(user_text: str):
+    """버튼/엔터 모두 이 함수로 처리. 제출하면 항상 다음 문제로 이동."""
+    if not ss.started or not ss.current[0]:
+        return
+    prefix, answer = ss.current
+    sim = fuzzy_match(user_text or "", answer)
+    is_correct = (sim >= ss.threshold)
+
+    ss.reveal_text = f"정답: {answer}"
+    ss.reveal_success = is_correct
+
+    if is_correct:
+        ss.score += 1
+        ss.best = max(ss.best, ss.score)
+        ss.just_correct = True
+    else:
+        ss.just_correct = False
+
+    ss.used.add(prefix)
+    ss.current = pick_prompt(ss.used)   # ✓ 다음 문제로 전환 (정오 관계없이)
+    ss.show_hint = False
+    ss.clear_input_pending = True       # ✓ 입력칸은 다음 렌더에서 안전하게 비움
+
 def start_game():
     ss.started = True
     ss.score = 0
@@ -210,49 +232,16 @@ def use_hint():
         ss.hint_used_total += 1
         ss.show_hint = True
 
-def submit_answer():
-    """엔터/제출 버튼 공통 처리: 제출하면 무조건 다음 문제로"""
-    if not ss.started or not ss.current[0]:
-        return
-    prefix, answer = ss.current
-    user = ss.get(ANSWER_KEY, "")
-    sim = fuzzy_match(user, answer)
-    is_correct = (sim >= ss.threshold)
-
-    # 정답 공개
-    ss.reveal_text = f"정답: {answer}"
-    ss.reveal_success = is_correct
-
-    # 점수 & 다음 문제로 이동 (정오 상관없이 이동)
-    if is_correct:
-        ss.score += 1
-        ss.best = max(ss.best, ss.score)
-        ss.just_correct = True
-    else:
-        ss.just_correct = False
-
-    ss.used.add(prefix)
-    ss.current = pick_prompt(ss.used)
-    ss.show_hint = False
-    ss.clear_input_pending = True   # 입력칸 초기화는 다음 렌더에서
-
 def skip_question():
     if not ss.started: return
     prefix, _ = ss.current
     ss.used.add(prefix)
     ss.current = pick_prompt(ss.used)
     ss.show_hint = False
-    ss.reveal_text = ""             # 스킵 시 정답 미공개
+    ss.reveal_text = ""                 # 스킵은 정답 공개 X
     ss.clear_input_pending = True
 
-def go_home():
-    ss.page = "home"
-    ss.started = False
-    ss.reveal_text = ""
-    ss.show_hint = False
-    play_tick_sound(False)
-
-# ====================== HOME (메인 시작 화면 유지) ======================
+# -------------------- 홈 화면 --------------------
 if ss.page == "home":
     play_tick_sound(False)
     st.markdown("<h1 style='text-align:center'>🧩 속담 이어말하기 게임</h1>", unsafe_allow_html=True)
@@ -265,37 +254,35 @@ if ss.page == "home":
         st.button("▶️ 게임 시작", use_container_width=True, on_click=start_game)
     st.caption("※ 브라우저 자동재생 정책상 소리는 첫 클릭 이후 활성화됩니다.")
 
-# ====================== GAME ======================
+# -------------------- 게임 화면 --------------------
 if ss.page == "game":
-    # 서버 1초 동기화
+    # 서버 동기화(타임아웃 처리용)
     if hasattr(st, "autorefresh"):
         st.autorefresh(interval=1000, key="__ticker__")
 
-    # 입력칸 초기화 예약이 있으면, 위젯 생성 전에 수행
+    # ✅ 입력칸 초기화는 위젯 생성 '직전' 단 한곳에서만 수행
     if ss.clear_input_pending:
         ss[ANSWER_KEY] = ""
         ss.clear_input_pending = False
 
-    # 문제 보장
+    # 현재 문제 보장
     if not ss.current or not ss.current[0]:
         ss.current = pick_prompt(ss.used)
 
-    remaining_server = max(0, int(round(ss.end_time - time.time()))) if ss.end_time else 0
-    if ss.started and remaining_server == 0:
+    # 타임아웃
+    remaining = max(0, int(round(ss.end_time - time.time()))) if ss.end_time else 0
+    if ss.started and remaining == 0:
         play_tick_sound(False)
         st.markdown("### ⏰ TIME OUT!")
         st.success(f"최종 점수: {ss.score}점 / 힌트 사용 {ss.hint_used_total}/2")
-        col = st.columns([1,2,1])[1]
-        with col:
-            st.button("다시 시작", use_container_width=True, on_click=start_game)
-            # 요청: 게임 화면의 '첫 화면' 버튼은 제거(홈으로 가는 버튼 제공 X)
+        st.button("다시 시작", use_container_width=True, on_click=start_game)
     else:
-        # 1) 상단 상태 카드
+        # 상단 상태 카드
         render_stats(ss.score, ss.end_time or time.time(), ss.hint_used_total)
-        play_tick_sound(ss.started and remaining_server > 0)
+        play_tick_sound(ss.started and remaining > 0)
 
-        # 2) 문제 박스 (위쪽, 실제 문장만)
-        _, mid, _ = st.columns([1, 2, 1])
+        # 문제 박스
+        _, mid, _ = st.columns([1,2,1])
         with mid:
             prefix, answer = ss.current
             st.markdown(f"""
@@ -305,8 +292,8 @@ if ss.page == "game":
             </div>
             """, unsafe_allow_html=True)
 
-        # 3) 정답 입력/버튼 박스 (Enter 제출 + 스킵 옆 힌트)  —— ‘첫 화면’ 버튼 제거
-        _, mid2, _ = st.columns([1, 2, 1])
+        # 입력/버튼 박스 (Enter 또는 '제출' 버튼 → 동일 처리)
+        _, mid2, _ = st.columns([1,2,1])
         with mid2:
             st.markdown("""
             <div style="border:1px solid #e9ecef; border-radius:14px; padding:16px 18px;
@@ -316,20 +303,20 @@ if ss.page == "game":
               </div>
             """, unsafe_allow_html=True)
 
-            # 폼: 엔터/버튼 동일 처리
+            # ✅ 폼: Enter와 버튼이 같은 경로(st.form_submit_button)로 들어옵니다.
             with st.form("answer_form", clear_on_submit=False):
                 st.text_input("정답", key=ANSWER_KEY, label_visibility="collapsed",
                               placeholder="예) 밤말은 쥐가 듣는다", help="오타 조금은 괜찮아요!")
                 submitted = st.form_submit_button("제출", use_container_width=True)
                 if submitted:
-                    submit_answer()
+                    _process_submission(ss.get(ANSWER_KEY, ""))
 
             colH, colS = st.columns([1,1])
             colH.button("💡 힌트", use_container_width=True,
-                        disabled=(not ss.started) or (ss.hint_used_total>=2) or ss.show_hint or remaining_server==0,
+                        disabled=(not ss.started) or (ss.hint_used_total>=2) or ss.show_hint or remaining==0,
                         on_click=use_hint)
             colS.button("스킵", use_container_width=True,
-                        disabled=(not ss.started or remaining_server==0),
+                        disabled=(not ss.started or remaining==0),
                         on_click=skip_question)
 
             if ss.show_hint:
@@ -337,7 +324,7 @@ if ss.page == "game":
 
             st.markdown("</div>", unsafe_allow_html=True)
 
-        # 4) 제출 직후 정답 공개 / 축하이펙트
+        # 제출 직후 효과
         if ss.reveal_text:
             flash_answer_overlay(ss.reveal_text, ss.reveal_success)
             ss.reveal_text = ""
