@@ -14,24 +14,9 @@ ANSWER_THRESHOLD = 0.8
 # ===================== 전역 스타일 =====================
 st.markdown("""
 <style>
-/* 화면 전체를 채우고 중앙 정렬을 쉽게 하기 위한 기본값 */
-.block-container { padding-top: 1.6rem; min-height: 100vh; }
-
-/* 입력칸 가독성 */
+/* 기본 패딩(위 여백)은 유지하되, 페이지별로 아래에서 덮어써서 중앙 정렬 */
+.block-container { padding-top: 1.6rem; }
 .stTextInput input { font-size: 1.3rem; padding: 16px 14px; }
-
-/* 홈 화면을 진짜 '세로 중앙'으로 */
-.home-shell{
-  min-height: 100vh;
-  display:flex;
-  flex-direction:column;
-}
-.home-center{
-  flex: 1;
-  display:flex;
-  flex-direction:column;
-  justify-content:center;
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -91,13 +76,13 @@ def pick_next(used:set) -> Tuple[str,str]:
     row = random.choice(remain)
     return row["prefix"], row["answer"]
 
-# ===================== 정답 사운드 전용 매니저(틱 소리 제거) =====================
+# ===================== 정답 사운드(시간초 소리 제거) =====================
 CORRECT_SOUND_HTML = """
 <script>
 (function () {
   if (window.correctSound) return;
 
-  // 간단한 딩 소리(백업용) - 짧은 WAV Base64
+  // 백업용 짧은 '딩' 사운드 (WAV Base64)
   const DING_SRC = "data:audio/wav;base64,UklGRlVvAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YXV3AAAAAAAdAFUAPgA7ADcAMwAwACwAKAAkACEAHwAcABoAFgATABAAEAAQABAAEAAQABAAEAAQABAAEAAQABEAEQARABEAEQARABEAERAREBMQEwATABMAEwATABMAGAAcAB8AIQAkACgALAAwADMANwA6AD4AUABWAWEAYgBjAGQA";
 
   let audioCtx = null;
@@ -116,10 +101,10 @@ CORRECT_SOUND_HTML = """
       }
     } catch (e) {}
 
-    // HTMLAudio 백업도 한 번 재생 시도하여 자동재생 허용 상태로 전환
+    // HTMLAudio 백업도 한 번 재생시도 → 자동재생 허용 전환
     if (!unlocked) {
       const a = correctAudio.cloneNode(true);
-      a.volume = 0.5;
+      a.volume = 0.6;
       a.play().then(() => { unlocked = true; }).catch(() => {});
     }
   }
@@ -153,7 +138,7 @@ CORRECT_SOUND_HTML = """
       });
     } else {
       const a = correctAudio.cloneNode(true);
-      a.volume = 0.7;
+      a.volume = 0.75;
       a.play().catch(() => {});
     }
   }
@@ -169,7 +154,6 @@ def play_correct_effect():
     html("""
     <div id="confetti" style="position:fixed;left:50%;bottom:-20px;transform:translateX(-50%);font-size:40px;opacity:0;transition:all .6s ease-out;z-index:9999;">🎉🎊✨</div>
     <script>
-      // 정답 효과음만 재생
       window.correctSound && (window.correctSound.ensureInit(), window.correctSound.playCorrect());
       const el = document.getElementById('confetti');
       if(el){
@@ -259,18 +243,34 @@ def go_home():
 
 # ===================== 화면 구성 =====================
 if ss.page == "home":
-    # 홈 페이지 전체를 세로 중앙 정렬
-    st.markdown('<div class="home-shell"><div class="home-center">', unsafe_allow_html=True)
+    # 🔸 전통적인 "절대 위치 + transform"으로 완전 중앙 배치
+    st.markdown("""
+    <style>
+    /* 홈 페이지일 때만 block-container를 화면 높이로 확장 */
+    section.main > div.block-container { min-height: 100vh; }
+    /* 중앙 박스 */
+    #home-center {
+      position: fixed;        /* 스크롤과 무관하게 뷰포트 정중앙 고정 */
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: min(720px, 92vw);
+      z-index: 2;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
+    # 중앙 박스(전통적 방식)
+    st.markdown('<div id="home-center">', unsafe_allow_html=True)
     st.markdown("<h1 style='text-align:center'>🧩 속담 이어말하기 게임</h1>", unsafe_allow_html=True)
     st.markdown(f"<p style='text-align:center'>제한 시간 안에 많이 맞혀보세요! (총 {TOTAL_Q}문제)</p>", unsafe_allow_html=True)
+
     _, mid, _ = st.columns([1, 2, 1])
     with mid:
         st.subheader("게임 설정")
         ss.duration = st.slider("⏱️ 제한 시간(초)", 30, 300, 90, step=10)
         st.button("▶️ 게임 시작", use_container_width=True, on_click=start_game)
-
-    st.markdown('</div></div>', unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 elif ss.page == "game":
     # 1초마다 카운트다운 갱신
