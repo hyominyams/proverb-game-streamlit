@@ -11,15 +11,23 @@ ss = st.session_state
 ANSWER_KEY = "answer_box"
 ANSWER_THRESHOLD = 0.8
 
-# 전역 스타일
+# ===================== 전역 스타일 =====================
 st.markdown("""
 <style>
-.block-container { padding-top: 1.6rem; }
+/* 화면 전체를 채우고 중앙 정렬을 쉽게 하기 위한 기본값 */
+.block-container { padding-top: 1.6rem; min-height: 100vh; }
+
+/* 입력칸 가독성 */
 .stTextInput input { font-size: 1.3rem; padding: 16px 14px; }
 
-/* 홈 화면 중앙 배치 래퍼 */
+/* 홈 화면을 진짜 '세로 중앙'으로 */
+.home-shell{
+  min-height: 100vh;
+  display:flex;
+  flex-direction:column;
+}
 .home-center{
-  min-height: 72vh;
+  flex: 1;
   display:flex;
   flex-direction:column;
   justify-content:center;
@@ -83,23 +91,18 @@ def pick_next(used:set) -> Tuple[str,str]:
     row = random.choice(remain)
     return row["prefix"], row["answer"]
 
-# ===================== 사운드/이펙트/UI =====================
-# 오디오 매니저 (WebAudio + HTMLAudio 이중 백업)
-SOUND_MANAGER_HTML = """
+# ===================== 정답 사운드 전용 매니저(틱 소리 제거) =====================
+CORRECT_SOUND_HTML = """
 <script>
 (function () {
-  if (window.soundManager) return;
+  if (window.correctSound) return;
 
-  // 짧은 비프/딩 샘플 (WAV Base64) — HTMLAudio 백업용
-  const TICK_SRC = "data:audio/wav;base64,UklGRnwpAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YVkpAAAAAAAfAFgAQgBBAEAAPwA9ADoANgAzAC8AKgAlACEAHwAcABoAFgATABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAA8ADwAOAA4ADgAOAA4ADgAOAA4ADwAPABAAEAAQABAAEAAQABAAEAAQABAAEwAWABoAHAAfACEAJQApACsALwAzADYANwA6AD0APwBAAEEAQgBZAQAA";
+  // 간단한 딩 소리(백업용) - 짧은 WAV Base64
   const DING_SRC = "data:audio/wav;base64,UklGRlVvAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YXV3AAAAAAAdAFUAPgA7ADcAMwAwACwAKAAkACEAHwAcABoAFgATABAAEAAQABAAEAAQABAAEAAQABAAEAAQABEAEQARABEAEQARABEAERAREBMQEwATABMAEwATABMAGAAcAB8AIQAkACgALAAwADMANwA6AD4AUABWAWEAYgBjAGQA";
 
   let audioCtx = null;
   let unlocked = false;
-  let tickInterval = null;
 
-  const tickAudio = new Audio(TICK_SRC);
-  tickAudio.preload = "auto";
   const correctAudio = new Audio(DING_SRC);
   correctAudio.preload = "auto";
 
@@ -113,10 +116,10 @@ SOUND_MANAGER_HTML = """
       }
     } catch (e) {}
 
-    // HTMLAudio도 한 번 재생 시도 → 사용자 제스처 이후 자동재생 허용 상태로 전환
+    // HTMLAudio 백업도 한 번 재생 시도하여 자동재생 허용 상태로 전환
     if (!unlocked) {
-      const a = tickAudio.cloneNode(true);
-      a.volume = 0.4;
+      const a = correctAudio.cloneNode(true);
+      a.volume = 0.5;
       a.play().then(() => { unlocked = true; }).catch(() => {});
     }
   }
@@ -135,29 +138,6 @@ SOUND_MANAGER_HTML = """
   document.addEventListener("touchstart", unlockHandler, { passive: true });
   document.addEventListener("pointerdown", unlockHandler);
 
-  document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) ensureInit();
-  });
-
-  function playTick() {
-    if (audioCtx && audioCtx.state === "running") {
-      const t = audioCtx.currentTime;
-      const o = audioCtx.createOscillator();
-      const g = audioCtx.createGain();
-      o.type = "sine";
-      o.frequency.setValueAtTime(1000, t);
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(0.2, t + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.10);
-      o.connect(g); g.connect(audioCtx.destination);
-      o.start(t); o.stop(t + 0.12);
-    } else {
-      const a = tickAudio.cloneNode(true);
-      a.volume = 0.6;
-      a.play().catch(() => {});
-    }
-  }
-
   function playCorrect() {
     if (audioCtx && audioCtx.state === "running") {
       const t = audioCtx.currentTime;
@@ -173,52 +153,29 @@ SOUND_MANAGER_HTML = """
       });
     } else {
       const a = correctAudio.cloneNode(true);
-      a.volume = 0.65;
+      a.volume = 0.7;
       a.play().catch(() => {});
     }
   }
 
-  function startTicking() {
-    ensureInit();
-    if (tickInterval) return;
-    // 시작 즉시 한 번 재생
-    playTick();
-    tickInterval = setInterval(playTick, 1000);
-  }
-
-  function stopTicking() {
-    if (tickInterval) {
-      clearInterval(tickInterval);
-      tickInterval = null;
-    }
-  }
-
-  window.soundManager = { ensureInit, startTicking, stopTicking, playTick, playCorrect };
+  window.correctSound = { ensureInit, playCorrect };
 })();
 </script>
 """
-# ❌ key 인자 사용 금지 (Streamlit Cloud 호환)
-html(SOUND_MANAGER_HTML, height=0)
-
-def control_ticking_sound(running: bool):
-    cmd = (
-        "window.soundManager && (window.soundManager.ensureInit(), window.soundManager.startTicking());"
-        if running else
-        "window.soundManager && window.soundManager.stopTicking();"
-    )
-    html(f"<script>{cmd}</script>", height=0)
+html(CORRECT_SOUND_HTML, height=0)
 
 def play_correct_effect():
     st.balloons()
     html("""
     <div id="confetti" style="position:fixed;left:50%;bottom:-20px;transform:translateX(-50%);font-size:40px;opacity:0;transition:all .6s ease-out;z-index:9999;">🎉🎊✨</div>
     <script>
-        window.soundManager && window.soundManager.playCorrect();
-        const el = document.getElementById('confetti');
-        if(el){
-            setTimeout(() => { el.style.opacity=1; el.style.bottom='40%'; }, 10);
-            setTimeout(() => { el.style.opacity=0; el.remove(); }, 900);
-        }
+      // 정답 효과음만 재생
+      window.correctSound && (window.correctSound.ensureInit(), window.correctSound.playCorrect());
+      const el = document.getElementById('confetti');
+      if(el){
+          setTimeout(() => { el.style.opacity=1; el.style.bottom='40%'; }, 10);
+          setTimeout(() => { el.style.opacity=0; el.remove(); }, 900);
+      }
     </script>
     """, height=0)
 
@@ -298,12 +255,13 @@ def use_hint_for_current():
     ss.hint_used_total += 1; ss.hint_shown_for = cur_id; st.rerun()
 
 def go_home():
-    ss.page="home"; ss.started=False; ss.reveal_text=""; ss.hint_shown_for=None; control_ticking_sound(False)
+    ss.page="home"; ss.started=False; ss.reveal_text=""; ss.hint_shown_for=None
 
 # ===================== 화면 구성 =====================
 if ss.page == "home":
-    control_ticking_sound(False)
-    st.markdown('<div class="home-center">', unsafe_allow_html=True)
+    # 홈 페이지 전체를 세로 중앙 정렬
+    st.markdown('<div class="home-shell"><div class="home-center">', unsafe_allow_html=True)
+
     st.markdown("<h1 style='text-align:center'>🧩 속담 이어말하기 게임</h1>", unsafe_allow_html=True)
     st.markdown(f"<p style='text-align:center'>제한 시간 안에 많이 맞혀보세요! (총 {TOTAL_Q}문제)</p>", unsafe_allow_html=True)
     _, mid, _ = st.columns([1, 2, 1])
@@ -311,44 +269,58 @@ if ss.page == "home":
         st.subheader("게임 설정")
         ss.duration = st.slider("⏱️ 제한 시간(초)", 30, 300, 90, step=10)
         st.button("▶️ 게임 시작", use_container_width=True, on_click=start_game)
-    st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown('</div></div>', unsafe_allow_html=True)
 
 elif ss.page == "game":
+    # 1초마다 카운트다운 갱신
     if hasattr(st, "autorefresh"): st.autorefresh(interval=1000, key="__ticker__")
     if not ss.current or not ss.current[0]: ss.current = pick_next(ss.used)
 
     remaining = max(0, int(round((ss.end_time or time.time()) - time.time())))
-
     if ss.started and remaining == 0:
-        control_ticking_sound(False); ss.started = False; st.rerun()
+        ss.started = False
+        st.rerun()
 
     if ss.started:
-        render_stats(ss.score, ss.end_time or time.time(), ss.hint_used_total); control_ticking_sound(True)
+        render_stats(ss.score, ss.end_time or time.time(), ss.hint_used_total)
         prefix, answer = ss.current
-        
+
         _, mid, _ = st.columns([1, 2, 1])
         with mid:
-            st.markdown(f"""<div style="border:1px solid #e9ecef;border-radius:14px;padding:24px 18px;box-shadow:0 2px 8px rgba(0,0,0,.04);margin-top:2px;"><div style="text-align:center;font-size:2.35rem;font-weight:800;">{prefix}</div></div>""", unsafe_allow_html=True)
+            st.markdown(
+                f"""<div style="border:1px solid #e9ecef;border-radius:14px;padding:24px 18px;
+                     box-shadow:0 2px 8px rgba(0,0,0,.04);margin-top:2px;">
+                     <div style="text-align:center;font-size:2.35rem;font-weight:800;">{prefix}</div>
+                    </div>""",
+                unsafe_allow_html=True
+            )
 
         _, mid2, _ = st.columns([1, 2, 1])
         with mid2:
-            st.markdown("""<div style="margin-top:12px;"></div>""", unsafe_allow_html=True)
+            st.markdown("<div style='margin-top:12px;'></div>", unsafe_allow_html=True)
             with st.form("answer_form", clear_on_submit=True):
                 st.text_input("정답", key=ANSWER_KEY, label_visibility="collapsed", help="오타 조금은 괜찮아요!")
                 submitted = st.form_submit_button("제출", use_container_width=True)
-                if submitted: process_submission(st.session_state.get(ANSWER_KEY, ""))
+                if submitted:
+                    process_submission(st.session_state.get(ANSWER_KEY, ""))
 
             colH, colS = st.columns([1, 1])
             colH.button("💡 힌트", use_container_width=True,
                         disabled=(remaining==0) or (ss.hint_used_total>=2) or (ss.hint_shown_for == prefix),
                         on_click=use_hint_for_current)
             colS.button("➡️ 스킵", use_container_width=True, disabled=(remaining==0), on_click=skip_question)
-            
+
             if ss.hint_shown_for == prefix:
                 st.info(f"힌트: **{chosung_hint(answer)}**")
 
-        if ss.reveal_text: flash_answer_overlay(ss.reveal_text, ss.reveal_success); ss.reveal_text = ""
-        if ss.just_correct: play_correct_effect(); ss.just_correct = False
+        # 오버레이 메시지 + 정답 효과음/이펙트
+        if ss.reveal_text:
+            flash_answer_overlay(ss.reveal_text, ss.reveal_success)
+            ss.reveal_text = ""
+        if ss.just_correct:
+            play_correct_effect()
+            ss.just_correct = False
 
     elif not ss.started and ss.page == "game":
         st.markdown("### ⏰ TIME OUT!")
