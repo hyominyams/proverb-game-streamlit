@@ -9,7 +9,7 @@ from streamlit.components.v1 import html
 st.set_page_config(page_title="속담 이어말하기", page_icon="🧩", layout="centered")
 ss = st.session_state
 ANSWER_KEY = "answer_box"
-ANSWER_THRESHOLD = 0.8  # 1. 정답 인정 임계값 0.8로 고정
+ANSWER_THRESHOLD = 0.8
 
 # 전역 스타일
 st.markdown("""
@@ -23,14 +23,16 @@ st.markdown("""
 @st.cache_data(show_spinner="문제 파일을 읽고 있습니다...")
 def load_question_bank() -> List[Dict[str, str]]:
     path = "question.csv"
-    if not os.path.exists(path): return []
+    if not os.path.exists(path):
+        return []
     bank: List[Dict[str, str]] = []
     with open(path, newline="", encoding="utf-8") as f:
         r = csv.DictReader(f)
         for row in r:
             p = (row.get("prefix") or "").strip()
             a = (row.get("answer") or "").strip()
-            if p and a: bank.append({"prefix": p, "answer": a})
+            if p and a:
+                bank.append({"prefix": p, "answer": a})
     random.shuffle(bank)
     return bank
 
@@ -73,97 +75,99 @@ def pick_next(used:set) -> Tuple[str,str]:
     row = random.choice(remain)
     return row["prefix"], row["answer"]
 
-# ===================== 사운드/이펙트/UI (사운드 로직 개선) =====================
-def init_sound_manager():
-    html("""
-    <script>
-    (function() {
-        if (window.soundManagerInitialized) return;
-        window.soundManagerInitialized = true;
+# ===================== 사운드/이펙트/UI (사운드 로직 최종 수정) =====================
+SOUND_MANAGER_HTML = """
+<script>
+(function() {
+    if (window.soundManager) return; // 이미 초기화되었다면 실행 안 함
 
-        const AC = window.AudioContext || window.webkitAudioContext;
-        window.audioCtx = new AC();
+    const soundManager = {};
+    let audioCtx;
 
-        // 브라우저 정책상 첫 사용자 인터랙션으로 오디오 컨텍스트를 활성화해야 함
-        const resumeAudio = () => {
-            if (window.audioCtx.state === 'suspended') {
-                window.audioCtx.resume();
+    // 오디오 컨텍스트 초기화 (사용자 첫 인터랙션 시)
+    const initAudioContext = () => {
+        if (!audioCtx) {
+            try {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioCtx.state === 'suspended') {
+                    audioCtx.resume();
+                }
+            } catch (e) {
+                console.error("AudioContext를 지원하지 않는 브라우저입니다.", e);
             }
-            document.removeEventListener('click', resumeAudio);
-            document.removeEventListener('touchstart', resumeAudio);
-        };
-        document.addEventListener('click', resumeAudio, { once: true });
-        document.addEventListener('touchstart', resumeAudio, { once: true });
+        }
+    };
+    document.addEventListener('click', initAudioContext, { once: true });
+    document.addEventListener('touchstart', initAudioContext, { once: true });
 
-        // 틱 소리 재생 함수
-        window.playSound_tick = function() {
-            if (window.audioCtx.state !== 'running') return;
-            const o = window.audioCtx.createOscillator();
-            const g = window.audioCtx.createGain();
-            o.type = 'sine';
-            o.frequency.setValueAtTime(1200, window.audioCtx.currentTime);
-            g.gain.setValueAtTime(0.0001, window.audioCtx.currentTime);
-            g.gain.exponentialRampToValueAtTime(0.3, window.audioCtx.currentTime + 0.02);
-            g.gain.exponentialRampToValueAtTime(0.0001, window.audioCtx.currentTime + 0.08);
+    // 틱 소리 재생
+    soundManager.playTick = function() {
+        if (!audioCtx || audioCtx.state !== 'running') return;
+        const o = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        o.type = 'sine';
+        o.frequency.setValueAtTime(1200, audioCtx.currentTime);
+        g.gain.setValueAtTime(0, audioCtx.currentTime);
+        g.gain.linearRampToValueAtTime(0.15, audioCtx.currentTime + 0.01);
+        g.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.1);
+        o.connect(g);
+        g.connect(audioCtx.destination);
+        o.start();
+        o.stop(audioCtx.currentTime + 0.1);
+    };
+
+    // 정답 효과음 재생
+    soundManager.playCorrect = function() {
+        if (!audioCtx || audioCtx.state !== 'running') return;
+        const t = audioCtx.currentTime;
+        const freqs = [523.25, 783.99, 1046.5];
+        freqs.forEach((f, i) => {
+            const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+            o.type = 'triangle';
+            o.frequency.setValueAtTime(f, t + i * 0.12);
+            g.gain.setValueAtTime(0, t + i * 0.12);
+            g.gain.exponentialRampToValueAtTime(0.3, t + i * 0.12 + 0.03);
+            g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.12 + 0.18);
             o.connect(g);
-            g.connect(window.audioCtx.destination);
-            o.start();
-            o.stop(window.audioCtx.currentTime + 0.1);
-        };
+            g.connect(audioCtx.destination);
+            o.start(t + i * 0.12);
+            o.stop(t + i * 0.12 + 0.2);
+        });
+    };
 
-        // 정답 효과음 재생 함수
-        window.playSound_correct = function() {
-            if (window.audioCtx.state !== 'running') return;
-            const t = window.audioCtx.currentTime;
-            function beep(f, d, du) {
-                const o = window.audioCtx.createOscillator(), g = window.audioCtx.createGain();
-                o.type = 'triangle';
-                o.frequency.setValueAtTime(f, t + d);
-                g.gain.setValueAtTime(0.0001, t + d);
-                g.gain.exponentialRampToValueAtTime(0.35, t + d + 0.03);
-                g.gain.exponentialRampToValueAtTime(0.0001, t + d + du);
-                o.connect(g);
-                g.connect(window.audioCtx.destination);
-                o.start(t + d);
-                o.stop(t + d + du + 0.03);
-            }
-            beep(523.25, 0.00, 0.12);
-            beep(783.99, 0.12, 0.12);
-            beep(1046.5, 0.24, 0.18);
-        };
-        
-        // 타이머 시작/중지 함수
-        window._tickInterval = null;
-        window.startTicking = function() {
-            if (window._tickInterval) return;
-            window._tickInterval = setInterval(window.playSound_tick, 1000);
-        };
-        window.stopTicking = function() {
-            if (window._tickInterval) {
-                clearInterval(window._tickInterval);
-                window._tickInterval = null;
-            }
-        };
-    })();
-    </script>
-    """, height=0)
+    // 타이머 제어
+    let tickInterval = null;
+    soundManager.startTicking = function() {
+        if (tickInterval) return;
+        tickInterval = setInterval(soundManager.playTick, 1000);
+    };
+    soundManager.stopTicking = function() {
+        if (tickInterval) {
+            clearInterval(tickInterval);
+            tickInterval = null;
+        }
+    };
 
-def play_tick_sound(running: bool):
-    if running:
-        st.components.v1.html("<script>window.startTicking && window.startTicking();</script>", height=0)
-    else:
-        st.components.v1.html("<script>window.stopTicking && window.stopTicking();</script>", height=0)
+    window.soundManager = soundManager;
+})();
+</script>
+"""
+html(SOUND_MANAGER_HTML, height=0)
 
-def play_correct_sound_and_confetti():
+def control_ticking_sound(running: bool):
+    script = "window.soundManager && window.soundManager.startTicking();" if running else "window.soundManager && window.soundManager.stopTicking();"
+    html(f"<script>{script}</script>", height=0)
+
+def play_correct_effect():
     st.balloons()
-    st.components.v1.html("""
-    <div id="confetti" style="position:fixed;left:50%;bottom:-20px;transform:translateX(-50%);font-size:40px;opacity:0;transition: all .6s ease-out;z-index:9999;">🎉🎊✨</div>
+    html("""
+    <div id="confetti" style="position:fixed;left:50%;bottom:-20px;transform:translateX(-50%);font-size:40px;opacity:0;transition:all .6s ease-out;z-index:9999;">🎉🎊✨</div>
     <script>
-        window.playSound_correct && window.playSound_correct();
+        window.soundManager && window.soundManager.playCorrect();
         const el = document.getElementById('confetti');
         if(el){
-            setTimeout(()=>{ el.style.opacity=1; el.style.bottom='40%'; }, 10);
-            setTimeout(()=>{ el.style.opacity=0; el.remove(); }, 900);
+            setTimeout(() => { el.style.opacity=1; el.style.bottom='40%'; }, 10);
+            setTimeout(() => { el.style.opacity=0; el.remove(); }, 900);
         }
     </script>
     """, height=0)
@@ -188,19 +192,15 @@ def render_stats(score:int, end_ts:float, hints:int):
     <script>
       (function(){{
         const end = {int(end_ts*1000) if end_ts else 0};
-        function update(){{
-          if (!end) return;
-          const rem = Math.max(0, Math.round((end - Date.now())/1000));
-          const el = document.getElementById('timer_div');
-          if (el) el.textContent = rem.toString();
-        }}
-        update();
-        if (!window.__timerIntervalMain) {{
-          window.__timerIntervalMain = setInterval(update, 1000);
-        }} else {{
-          // Ensure timer updates if end_ts changes on rerun
-          clearInterval(window.__timerIntervalMain);
-          window.__timerIntervalMain = setInterval(update, 1000);
+        const timerDiv = document.getElementById('timer_div');
+        if (!window.mainTimerInterval) {{
+            const update = () => {{
+                if (!end || !timerDiv) return;
+                const rem = Math.max(0, Math.round((end - Date.now())/1000));
+                timerDiv.textContent = rem.toString();
+            }};
+            update();
+            window.mainTimerInterval = setInterval(update, 1000);
         }}
       }})();
     </script>
@@ -215,8 +215,8 @@ for k,v in defaults.items():
 
 # ===================== 콜백/핵심 로직 =====================
 def start_game():
-    ss.started = True; ss.score = 0; ss.used = set(); ss.hint_used_total = 0; ss.hint_shown_for = None
-    ss.current = pick_next(ss.used); ss.end_time = time.time() + ss.duration; ss.page = "game"
+    ss.started=True; ss.score=0; ss.used=set(); ss.hint_used_total=0; ss.hint_shown_for=None
+    ss.current=pick_next(ss.used); ss.end_time=time.time()+ss.duration; ss.page="game"
 
 def process_submission(user_text: str):
     if not (ss.started and ss.current[0]): return
@@ -242,20 +242,30 @@ def use_hint_for_current():
     ss.hint_used_total += 1; ss.hint_shown_for = cur_id; st.rerun()
 
 def go_home():
-    ss.page = "home"; ss.started = False; ss.reveal_text = ""; ss.hint_shown_for = None; play_tick_sound(False)
+    ss.page="home"; ss.started=False; ss.reveal_text=""; ss.hint_shown_for=None; control_ticking_sound(False)
 
 # ===================== 화면 구성 =====================
-init_sound_manager() # 앱 시작 시 사운드 매니저 초기화
-
 if ss.page == "home":
-    play_tick_sound(False)
+    control_ticking_sound(False)
+    # 2. 메인 화면 중앙 정렬을 위한 CSS
+    st.markdown("""
+    <style>
+    div[data-testid="stVerticalBlock"] > [data-testid="stVerticalBlock"] > [data-testid="stVerticalBlock"] > [data-testid="stVerticalBlock"] {
+        min-height: 70vh;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
     st.markdown("<h1 style='text-align:center'>🧩 속담 이어말하기 게임</h1>", unsafe_allow_html=True)
     st.markdown(f"<p style='text-align:center'>제한 시간 안에 많이 맞혀보세요! (총 {TOTAL_Q}문제)</p>", unsafe_allow_html=True)
-    _, mid, _ = st.columns([1,2,1])
+    
+    _, mid, _ = st.columns([1, 2, 1])
     with mid:
         st.subheader("게임 설정")
         ss.duration = st.slider("⏱️ 제한 시간(초)", 30, 300, 90, step=10)
-        # 1, 2번 요청: 임계값 슬라이더와 자동재생 캡션 제거
         st.button("▶️ 게임 시작", use_container_width=True, on_click=start_game)
 
 elif ss.page == "game":
@@ -265,17 +275,17 @@ elif ss.page == "game":
     remaining = max(0, int(round((ss.end_time or time.time()) - time.time())))
 
     if ss.started and remaining == 0:
-        play_tick_sound(False); ss.started = False; st.rerun()
+        control_ticking_sound(False); ss.started = False; st.rerun()
 
     if ss.started:
-        render_stats(ss.score, ss.end_time or time.time(), ss.hint_used_total); play_tick_sound(True)
+        render_stats(ss.score, ss.end_time or time.time(), ss.hint_used_total); control_ticking_sound(True)
         prefix, answer = ss.current
         
-        _, mid, _ = st.columns([1,2,1])
+        _, mid, _ = st.columns([1, 2, 1])
         with mid:
             st.markdown(f"""<div style="border:1px solid #e9ecef;border-radius:14px;padding:24px 18px;box-shadow:0 2px 8px rgba(0,0,0,.04);margin-top:2px;"><div style="text-align:center;font-size:2.35rem;font-weight:800;">{prefix}</div></div>""", unsafe_allow_html=True)
 
-        _, mid2, _ = st.columns([1,2,1])
+        _, mid2, _ = st.columns([1, 2, 1])
         with mid2:
             st.markdown("""<div style="margin-top:12px;"></div>""", unsafe_allow_html=True)
             with st.form("answer_form", clear_on_submit=True):
@@ -283,7 +293,7 @@ elif ss.page == "game":
                 submitted = st.form_submit_button("제출", use_container_width=True)
                 if submitted: process_submission(st.session_state.get(ANSWER_KEY, ""))
             
-            colH, colS = st.columns([1,1])
+            colH, colS = st.columns([1, 1])
             colH.button("💡 힌트", use_container_width=True, disabled=(remaining==0) or (ss.hint_used_total>=2) or (ss.hint_shown_for == prefix), on_click=use_hint_for_current)
             colS.button("➡️ 스킵", use_container_width=True, disabled=(remaining==0), on_click=skip_question)
             
@@ -291,12 +301,12 @@ elif ss.page == "game":
                 st.info(f"힌트: **{chosung_hint(answer)}**")
 
         if ss.reveal_text: flash_answer_overlay(ss.reveal_text, ss.reveal_success); ss.reveal_text = ""
-        if ss.just_correct: play_correct_sound_and_confetti(); ss.just_correct = False
+        if ss.just_correct: play_correct_effect(); ss.just_correct = False
 
     elif not ss.started and ss.page == "game":
         st.markdown("### ⏰ TIME OUT!")
         st.success(f"최종 점수: {ss.score}점 / 힌트 사용 {ss.hint_used_total}/2")
-        col = st.columns([1,2,1])[1]
+        col = st.columns([1, 2, 1])[1]
         with col:
             st.button("다시 시작", use_container_width=True, on_click=start_game)
             st.button("🏠 첫 화면", use_container_width=True, on_click=go_home)
