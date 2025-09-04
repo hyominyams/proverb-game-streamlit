@@ -1,8 +1,7 @@
 # streamlit_app.py
 # -*- coding: utf-8 -*-
-import os, csv, time, random, difflib, unicodedata, hashlib, pathlib, threading
+import os, csv, time, random, difflib, unicodedata
 from typing import Dict, Tuple, List
-from concurrent.futures import ThreadPoolExecutor
 import streamlit as st
 from streamlit.components.v1 import html
 
@@ -19,44 +18,32 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ===================== CSV 로드 (중복 데이터 경고 추가) =====================
-CSV_CANDIDATES = ["question.csv", "data/question.csv"]
-
+# ===================== CSV 로드 =====================
 @st.cache_data(show_spinner="문제 파일을 읽고 있습니다...")
 def load_question_bank() -> List[Dict[str, str]]:
-    path = None
-    for cand in CSV_CANDIDATES:
-        if os.path.exists(cand):
-            path = cand
-            break
+    path = "question.csv"
+    if not os.path.exists(path):
+        return []
+    
     bank: List[Dict[str, str]] = []
-    seen_prefixes = set()
-    duplicates = []
-    if path:
-        with open(path, newline="", encoding="utf-8") as f:
-            r = csv.DictReader(f)
-            for row in r:
-                p = (row.get("prefix") or row.get("PREFIX") or "").strip()
-                a = (row.get("answer") or row.get("ANSWER") or "").strip()
-                if p and a:
-                    if p in seen_prefixes:
-                        duplicates.append(p)
-                    else:
-                        bank.append({"prefix": p, "answer": a})
-                        seen_prefixes.add(p)
-    if duplicates:
-        st.warning(f"⚠️ **경고:** `question.csv` 파일에 중복된 문제가 있습니다. 다음 문제는 제외되었습니다: `{', '.join(set(duplicates))}`")
+    with open(path, newline="", encoding="utf-8") as f:
+        r = csv.DictReader(f)
+        for row in r:
+            p = (row.get("prefix") or "").strip()
+            a = (row.get("answer") or "").strip()
+            if p and a:
+                bank.append({"prefix": p, "answer": a})
     random.shuffle(bank)
     return bank
 
 BANK = load_question_bank()
 if not BANK:
-    st.error("`question.csv`를 찾을 수 없거나, `prefix,answer` 데이터가 비어 있습니다. CSV를 업로드한 뒤 다시 실행하세요.")
+    st.error("`question.csv` 파일을 찾을 수 없거나 내용이 비어 있습니다. CSV 파일을 확인하고 GitHub에 추가해주세요.")
     st.stop()
 
 TOTAL_Q = len(BANK)
 
-# ===================== 유틸(채점/힌트/선택, 리셋 알림 추가) =====================
+# ===================== 유틸 (채점/힌트/선택) =====================
 def normalize(t: str) -> str:
     s = unicodedata.normalize("NFKC", t or "")
     s = "".join(ch for ch in s if ch.isalnum() or ord(ch) > 0x3130)
@@ -88,9 +75,9 @@ def pick_next(used:set) -> Tuple[str,str]:
     row = random.choice(remain)
     return row["prefix"], row["answer"]
 
-# ===================== 사운드/이펙트 (render_stats 복원) =====================
+# ===================== 사운드/이펙트/UI =====================
 def play_tick_sound(running: bool):
-    if running: html("""<script>(function(){if(window._tickInterval)return;const AC=window.AudioContext||window.webkitAudioContext;const ctx=new AC();const resume=()=>{ctx.resume();document.removeEventListener('click',resume);};document.addEventListener('click',resume,{once:true});function tick(){const o=ctx.createOscillator(),g=ctx.createGain();o.type='square';o.frequency.value=1000;g.gain.setValueAtTime(0.0001,ctx.currentTime);g.gain.exponentialRampToValueAtTime(0.2,ctx.currentTime+0.02);g.gain.exponentialRampToValueAtTime(0.0001,ctx.currentTime+0.08);o.connect(g);g.connect(ctx.destination);o.start();o.stop(ctx.currentTime+0.1);}window._tickInterval=setInterval(tick,1000);})();</script>""", height=0)
+    if running: html("""<script>(function(){if(window._tickInterval)return;const AC=window.AudioContext||window.webkitAudioContext;const ctx=new AC();const resume=()=>{ctx.resume();document.removeEventListener('click',resume);};document.addEventListener('click',resume,{once:true});function tick(){const o=ctx.createOscillator(),g=ctx.createGain();o.type='square';o.frequency.value=1000;g.gain.setValueAtTime(0.0001,ctx.currentTime);g.gain.exponentialRampToValueAtTime(0.2,ctx.currentTime+0.02);g.gain.exponentialRंपToValueAtTime(0.0001,ctx.currentTime+0.08);o.connect(g);g.connect(ctx.destination);o.start();o.stop(ctx.currentTime+0.1);}window._tickInterval=setInterval(tick,1000);})();</script>""", height=0)
     else: html("""<script>if(window._tickInterval){clearInterval(window._tickInterval);window._tickInterval=null;}</script>""", height=0)
 
 def play_correct_sound_and_confetti():
@@ -99,7 +86,6 @@ def play_correct_sound_and_confetti():
 def flash_answer_overlay(text:str, success:bool):
     color = "#10b981" if success else "#ef4444"; html(f"""<style>@keyframes pop{{0%{{transform:scale(.9);opacity:.0;}}50%{{transform:scale(1.03);opacity:1;}}100%{{transform:scale(1.0);opacity:1;}}}}</style><div id="ansflash" style="position:fixed;left:50%;top:12%;transform:translateX(-50%);background:{color};color:white;padding:10px 18px;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.2);font-size:18px;font-weight:700;z-index:9999;animation:pop .25s ease-out;">{text}</div><script>setTimeout(()=>{{const el=document.getElementById('ansflash');if(el)el.remove();}},1200);</script>""", height=0)
 
-# 1번 요청: 점수/시간 UI를 그리는 함수 복원
 def render_stats(score:int, end_ts:float, hints:int):
     now_rem = max(0, int(round(end_ts - time.time()))) if end_ts else 0
     html(f"""
@@ -131,66 +117,9 @@ def render_stats(score:int, end_ts:float, hints:int):
     </script>
     """, height=118)
 
-# ===================== Gemini 이미지 (졸라맨 프롬프트) =====================
-IMG_DIR = pathlib.Path("assets/images")
-IMG_DIR.mkdir(parents=True, exist_ok=True)
-
-def _slug(s: str) -> str: return hashlib.sha1(s.encode("utf-8")).hexdigest()[:12]
-def image_path_for(prefix: str, answer: str) -> str: return str(IMG_DIR / f"{_slug(prefix+' '+answer)}.png")
-
-@st.cache_resource(show_spinner=False)
-def get_executor(): return ThreadPoolExecutor(max_workers=2)
-
-_inflight_lock = threading.Lock()
-_inflight = set()
-
-def _get_gemini_api_key() -> str | None: return st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
-
-def _generate_image_with_gemini(prefix: str, answer: str, out_path: str) -> bool:
-    try: import google.generativeai as genai
-    except Exception as e:
-        print(f"[Init Error] google.generativeai 라이브러리를 임포트할 수 없습니다: {e}"); return False
-
-    api_key = _get_gemini_api_key()
-    if not api_key:
-        print("[Config Error] Gemini API 키가 설정되지 않았습니다."); return False
-
-    # 2번 요청: '졸라맨' 스타일 프롬프트로 변경
-    sketch_prompt = ("'졸라맨' 그림체. 속담의 상황을 막대기 모양의 사람이나 사물로만 아주 간단하게 표현해줘. "
-                     "흑백으로 그리고, 텍스트는 절대 넣지 말 것.")
-    prompt = f"{sketch_prompt}\n속담: '{prefix} … {answer}'"
-
-    try:
-        genai.configure(api_key=api_key)
-        # 2번 요청: 가장 빠른 모델인 gemini-1.5-flash 사용
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        response = model.generate_content(prompt, generation_config={"response_mime_type": "image/png"})
-
-        if response.parts:
-            pathlib.Path(out_path).write_bytes(response.parts[0].inline_data.data)
-            return True
-        else:
-            print(f"[API Error] 이미지 데이터가 비어있는 응답: {response}"); return False
-    except Exception as e:
-        print(f"[Image Generation Error] 이미지 생성 중 예외 발생: {e}"); return False
-
-def ensure_image_async(prefix: str, answer: str) -> tuple[str, bool]:
-    path = image_path_for(prefix, answer)
-    if os.path.exists(path): return path, True
-    key = path
-    with _inflight_lock:
-        if key in _inflight: return path, False
-        _inflight.add(key)
-    def _job():
-        try: _generate_image_with_gemini(prefix, answer, path)
-        finally:
-            with _inflight_lock: _inflight.discard(key)
-    get_executor().submit(_job)
-    return path, False
-
 # ===================== 상태 기본값 =====================
 defaults = dict(page="home", started=False, score=0, best=0, used=set(), current=(None,None),
-                next_item=None, duration=90, threshold=0.85, hint_used_total=0, hint_shown_for=None,
+                duration=90, threshold=0.85, hint_used_total=0, hint_shown_for=None,
                 end_time=None, reveal_text="", reveal_success=False, just_correct=False)
 for k,v in defaults.items():
     if k not in ss: ss[k]=v
@@ -198,9 +127,7 @@ for k,v in defaults.items():
 # ===================== 콜백/핵심 로직 =====================
 def start_game():
     ss.started = True; ss.score = 0; ss.used = set(); ss.hint_used_total = 0; ss.hint_shown_for = None
-    ss.current = pick_next(ss.used); ss.next_item = pick_next(ss.used)
-    ensure_image_async(*ss.current); ensure_image_async(*ss.next_item)
-    ss.end_time = time.time() + ss.duration; ss.page = "game"
+    ss.current = pick_next(ss.used); ss.end_time = time.time() + ss.duration; ss.page = "game"
 
 def process_submission(user_text: str):
     if not (ss.started and ss.current[0]): return
@@ -210,17 +137,13 @@ def process_submission(user_text: str):
     if is_correct:
         ss.score += 1; ss.best = max(ss.best, ss.score); ss.just_correct = True
     else: ss.just_correct = False
-    ss.used.add(prefix); ss.current = ss.next_item; ss.next_item = pick_next(ss.used)
-    ss.hint_shown_for = None
-    ensure_image_async(*ss.current); ensure_image_async(*ss.next_item)
+    ss.used.add(prefix); ss.current = pick_next(ss.used); ss.hint_shown_for = None
     st.rerun()
 
 def skip_question():
     if not ss.started: return
     prefix, _ = ss.current
-    ss.used.add(prefix); ss.current = ss.next_item; ss.next_item = pick_next(ss.used)
-    ss.hint_shown_for = None
-    ensure_image_async(*ss.current); ensure_image_async(*ss.next_item)
+    ss.used.add(prefix); ss.current = pick_next(ss.used); ss.hint_shown_for = None
     st.rerun()
 
 def use_hint_for_current():
@@ -232,7 +155,7 @@ def use_hint_for_current():
 def go_home():
     ss.page = "home"; ss.started = False; ss.reveal_text = ""; ss.hint_shown_for = None; play_tick_sound(False)
 
-# ===================== 홈 화면 =====================
+# ===================== 화면 구성 =====================
 if ss.page == "home":
     play_tick_sound(False)
     st.markdown("<h1 style='text-align:center'>🧩 속담 이어말하기 게임</h1>", unsafe_allow_html=True)
@@ -244,40 +167,38 @@ if ss.page == "home":
         st.button("▶️ 게임 시작", use_container_width=True, on_click=start_game)
     st.caption("※ 브라우저 자동재생 정책상 소리는 첫 클릭 이후 활성화됩니다.")
 
-# ===================== 게임 화면 =====================
-if ss.page == "game":
+elif ss.page == "game":
     if hasattr(st, "autorefresh"): st.autorefresh(interval=1000, key="__ticker__")
     if not ss.current or not ss.current[0]: ss.current = pick_next(ss.used)
 
     remaining = max(0, int(round((ss.end_time or time.time()) - time.time())))
 
     if ss.started and remaining == 0:
-        play_tick_sound(False)
-        ss.started = False
-        st.rerun()
+        play_tick_sound(False); ss.started = False; st.rerun()
 
     if ss.started:
         render_stats(ss.score, ss.end_time or time.time(), ss.hint_used_total); play_tick_sound(True)
+        prefix, answer = ss.current
+        
         _, mid, _ = st.columns([1,2,1])
         with mid:
-            prefix, answer = ss.current
-            st.markdown(f"""<div style="border:1px solid #e9ecef;border-radius:14px;padding:14px 18px;box-shadow:0 2px 8px rgba(0,0,0,.04);margin-top:2px;"><div style="text-align:center;font-size:2.35rem;font-weight:800;">{prefix}</div></div>""", unsafe_allow_html=True)
-            img_path, ready = ensure_image_async(prefix, answer)
-            if ready: st.image(img_path, use_column_width=True, caption="AI 그림 힌트")
-            else: st.markdown("<div style='text-align:center;color:#888'>🎨 그림 힌트 준비 중…</div>", unsafe_allow_html=True)
+            st.markdown(f"""<div style="border:1px solid #e9ecef;border-radius:14px;padding:24px 18px;box-shadow:0 2px 8px rgba(0,0,0,.04);margin-top:2px;"><div style="text-align:center;font-size:2.35rem;font-weight:800;">{prefix}</div></div>""", unsafe_allow_html=True)
 
         _, mid2, _ = st.columns([1,2,1])
         with mid2:
-            st.markdown("""<div style="border:1px solid #e9ecef;border-radius:14px;padding:16px 18px;box-shadow:0 2px 8px rgba(0,0,0,.04);margin-top:12px;"><div style="text-align:center;font-weight:700;margin-bottom:8px">정답을 입력한 뒤 Enter 키를 누르거나 '제출'을 클릭하세요</div>""", unsafe_allow_html=True)
+            st.markdown("""<div style="margin-top:12px;"></div>""", unsafe_allow_html=True)
             with st.form("answer_form", clear_on_submit=True):
                 st.text_input("정답", key=ANSWER_KEY, label_visibility="collapsed", help="오타 조금은 괜찮아요!")
                 submitted = st.form_submit_button("제출", use_container_width=True)
                 if submitted: process_submission(st.session_state.get(ANSWER_KEY, ""))
+            
             colH, colS = st.columns([1,1])
-            colH.button("💡 힌트", use_container_width=True, disabled=(remaining==0) or (ss.hint_used_total>=2) or (ss.hint_shown_for == ss.current[0]), on_click=use_hint_for_current)
+            colH.button("💡 힌트", use_container_width=True, disabled=(remaining==0) or (ss.hint_used_total>=2) or (ss.hint_shown_for == prefix), on_click=use_hint_for_current)
             colS.button("➡️ 스킵", use_container_width=True, disabled=(remaining==0), on_click=skip_question)
-            if ss.hint_shown_for == ss.current[0]: st.info(f"힌트: **{chosung_hint(ss.current[1])}**")
-            st.markdown("</div>", unsafe_allow_html=True)
+            
+            if ss.hint_shown_for == prefix:
+                st.info(f"힌트: **{chosung_hint(answer)}**")
+
         if ss.reveal_text: flash_answer_overlay(ss.reveal_text, ss.reveal_success); ss.reveal_text = ""
         if ss.just_correct: play_correct_sound_and_confetti(); ss.just_correct = False
 
