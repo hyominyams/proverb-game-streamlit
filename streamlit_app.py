@@ -19,7 +19,7 @@ st.markdown("""
 
 /* 홈 화면 중앙 배치 래퍼 */
 .home-center{
-  min-height: 72vh;            /* 화면 높이 기준 중앙에 가깝게 */
+  min-height: 72vh;
   display:flex;
   flex-direction:column;
   justify-content:center;
@@ -84,14 +84,14 @@ def pick_next(used:set) -> Tuple[str,str]:
     return row["prefix"], row["answer"]
 
 # ===================== 사운드/이펙트/UI =====================
-# 오디오 매니저 (WebAudio + HTMLAudio 이중 백업) — 고정 key로 삽입하여 rerun에도 유지
+# 오디오 매니저 (WebAudio + HTMLAudio 이중 백업)
 SOUND_MANAGER_HTML = """
 <script>
 (function () {
   if (window.soundManager) return;
 
   // 짧은 비프/딩 샘플 (WAV Base64) — HTMLAudio 백업용
-  const TICK_SRC = "data:audio/wav;base64,UklGRnwpAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YVgpAAAAAAAfAFgAQgBBAEAAPwA9ADoANgAzAC8AKgAlACEAHwAcABoAFgATABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAA8ADwAOAA4ADgAOAA4ADgAOAA4ADwAPABAAEAAQABAAEAAQABAAEAAQABAAEwAWABoAHAAfACEAJQApACsALwAzADYANwA6AD0APwBAAEEAQgBZAQAA";
+  const TICK_SRC = "data:audio/wav;base64,UklGRnwpAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YVkpAAAAAAAfAFgAQgBBAEAAPwA9ADoANgAzAC8AKgAlACEAHwAcABoAFgATABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAA8ADwAOAA4ADgAOAA4ADgAOAA4ADwAPABAAEAAQABAAEAAQABAAEAAQABAAEwAWABoAHAAfACEAJQApACsALwAzADYANwA6AD0APwBAAEEAQgBZAQAA";
   const DING_SRC = "data:audio/wav;base64,UklGRlVvAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YXV3AAAAAAAdAFUAPgA7ADcAMwAwACwAKAAkACEAHwAcABoAFgATABAAEAAQABAAEAAQABAAEAAQABAAEAAQABEAEQARABEAEQARABEAERAREBMQEwATABMAEwATABMAGAAcAB8AIQAkACgALAAwADMANwA6AD4AUABWAWEAYgBjAGQA";
 
   let audioCtx = null;
@@ -181,7 +181,7 @@ SOUND_MANAGER_HTML = """
   function startTicking() {
     ensureInit();
     if (tickInterval) return;
-    // 시작 즉시 한 번 재생해서 "켜졌다"는 느낌 제공
+    // 시작 즉시 한 번 재생
     playTick();
     tickInterval = setInterval(playTick, 1000);
   }
@@ -197,8 +197,8 @@ SOUND_MANAGER_HTML = """
 })();
 </script>
 """
-# 👇 동일한 컴포넌트 인스턴스를 유지하기 위해 key 고정
-html(SOUND_MANAGER_HTML, height=0, key="soundmgr")
+# ❌ key 인자 사용 금지 (Streamlit Cloud 호환)
+html(SOUND_MANAGER_HTML, height=0)
 
 def control_ticking_sound(running: bool):
     cmd = (
@@ -303,20 +303,14 @@ def go_home():
 # ===================== 화면 구성 =====================
 if ss.page == "home":
     control_ticking_sound(False)
-
-    # 홈 화면을 중앙으로 배치하는 래퍼 시작
     st.markdown('<div class="home-center">', unsafe_allow_html=True)
-
     st.markdown("<h1 style='text-align:center'>🧩 속담 이어말하기 게임</h1>", unsafe_allow_html=True)
     st.markdown(f"<p style='text-align:center'>제한 시간 안에 많이 맞혀보세요! (총 {TOTAL_Q}문제)</p>", unsafe_allow_html=True)
-    
     _, mid, _ = st.columns([1, 2, 1])
     with mid:
         st.subheader("게임 설정")
         ss.duration = st.slider("⏱️ 제한 시간(초)", 30, 300, 90, step=10)
         st.button("▶️ 게임 시작", use_container_width=True, on_click=start_game)
-
-    # 래퍼 종료
     st.markdown('</div>', unsafe_allow_html=True)
 
 elif ss.page == "game":
