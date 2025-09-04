@@ -19,21 +19,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ===================== CSV 로드 =====================
+# ===================== CSV 로드(딕셔너리 완전 제거) =====================
 CSV_CANDIDATES = ["question.csv", "data/question.csv"]
-
-FALLBACK: List[Dict[str, str]] = [
-    {"prefix": "낮말은 새가 듣고", "answer": "밤말은 쥐가 듣는다"},
-    {"prefix": "가는 말이 고와야", "answer": "오는 말이 곱다"},
-    {"prefix": "고래 싸움에", "answer": "새우 등 터진다"},
-    {"prefix": "돌다리도", "answer": "두들겨 보고 건너라"},
-    {"prefix": "백지장도", "answer": "맞들면 낫다"},
-    {"prefix": "등잔 밑이", "answer": "어둡다"},
-    {"prefix": "티끌 모아", "answer": "태산"},
-    {"prefix": "쇠귀에", "answer": "경 읽기"},
-    {"prefix": "말 한마디로", "answer": "천냥 빚을 갚는다"},
-    {"prefix": "세 살 버릇", "answer": "여든까지 간다"},
-]
 
 @st.cache_data(show_spinner=False)
 def load_question_bank() -> List[Dict[str, str]]:
@@ -46,18 +33,20 @@ def load_question_bank() -> List[Dict[str, str]]:
     if path:
         with open(path, newline="", encoding="utf-8") as f:
             r = csv.DictReader(f)
-            # 허용 헤더: prefix, answer (대소문자 무시)
             for row in r:
                 p = (row.get("prefix") or row.get("PREFIX") or "").strip()
                 a = (row.get("answer") or row.get("ANSWER") or "").strip()
                 if p and a:
                     bank.append({"prefix": p, "answer": a})
-    if not bank:
-        bank = FALLBACK[:]
     random.shuffle(bank)
     return bank
 
 BANK = load_question_bank()
+if not BANK:
+    st.error("`question.csv` 또는 `data/question.csv`를 찾을 수 없거나, `prefix,answer` 데이터가 비어 있습니다. CSV를 업로드한 뒤 다시 실행하세요.")
+    st.stop()
+
+TOTAL_Q = len(BANK)
 
 # ===================== 유틸(채점/힌트/선택) =====================
 def normalize(t: str) -> str:
@@ -198,7 +187,7 @@ def render_stats(score:int, end_ts:float, hints:int):
     </script>
     """, height=118)
 
-# ===================== Gemini 이미지 (비동기+캐시) =====================
+# ===================== Gemini 이미지 (비동기+캐시, 스케치 지시) =====================
 IMG_DIR = pathlib.Path("assets/images")
 IMG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -216,7 +205,6 @@ _inflight_lock = threading.Lock()
 _inflight = set()
 
 def _get_gemini_api_key() -> str | None:
-    # Secrets 우선, 없으면 환경변수
     return st.secrets.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
 
 def _generate_image_with_gemini(prefix: str, answer: str, out_path: str) -> bool:
@@ -229,30 +217,52 @@ def _generate_image_with_gemini(prefix: str, answer: str, out_path: str) -> bool
     if not api_key:
         return False
 
+    # ★ 빠르고 단순한 '선 스케치'를 유도하는 프롬프트
+    sketch_prompt = (
+        "instructions: 아이들이 속담을 잘 이해할 수 있도록 아이 수준에서 '스케치'를 그려주세요. "
+        "많은 채색과 디테일한 디자인은 피하고, 학생들이 쉽게 특징을 잡을 수 있도록 '간단한 선 스케치'로 그립니다. "
+        "모노톤 또는 채색 최소화, 단순 도형 위주. 텍스트(글자)는 그림에 넣지 마세요. 밝고 친근한 느낌."
+    )
+    prompt = f"{sketch_prompt}\n속담: '{prefix} … {answer}'"
+
     try:
         genai.configure(api_key=api_key)
-        prompt = (
-            "K-초등학생용 학습 일러스트 스타일. 단색 배경, 선명한 색, 단순한 도형. "
-            f"속담: '{prefix} … {answer}'. 텍스트는 그림에 넣지 말 것. "
-            "폭력/공포 요소 없이 밝고 친근하게."
-        )
 
-        # SDK 버전별 호환 경로
-        if hasattr(genai, "generate_images"):
-            res = genai.generate_images(model="imagegeneration", prompt=prompt)
-            img = res.images[0]
-            data = getattr(img, "bytes", None) or getattr(img, "image_bytes", None) or getattr(img, "data", None)
-            if not data: return False
-            pathlib.Path(out_path).write_bytes(data)
-            return True
+        # 1) 가장 빠른 후보 먼저 시도
+        try:
+            model = genai.GenerativeModel("imagen-3.0-fast")
+            if hasattr(model, "generate_image"):
+                img = model.generate_image(prompt=prompt)
+                data = getattr(img, "bytes", None) or getattr(img, "image_bytes", None)
+                if data:
+                    pathlib.Path(out_path).write_bytes(data)
+                    return True
+        except Exception:
+            pass
 
-        model = genai.GenerativeModel("imagen-3.0")
-        if hasattr(model, "generate_image"):
-            img = model.generate_image(prompt=prompt)
-            data = getattr(img, "bytes", None) or getattr(img, "image_bytes", None)
-            if not data: return False
-            pathlib.Path(out_path).write_bytes(data)
-            return True
+        # 2) 구버전/호환 경로
+        try:
+            if hasattr(genai, "generate_images"):
+                res = genai.generate_images(model="imagegeneration", prompt=prompt)
+                img = res.images[0]
+                data = getattr(img, "bytes", None) or getattr(img, "image_bytes", None) or getattr(img, "data", None)
+                if data:
+                    pathlib.Path(out_path).write_bytes(data)
+                    return True
+        except Exception:
+            pass
+
+        # 3) 기본 imagen-3.0 최후 fallback
+        try:
+            model = genai.GenerativeModel("imagen-3.0")
+            if hasattr(model, "generate_image"):
+                img = model.generate_image(prompt=prompt)
+                data = getattr(img, "bytes", None) or getattr(img, "image_bytes", None)
+                if data:
+                    pathlib.Path(out_path).write_bytes(data)
+                    return True
+        except Exception:
+            pass
 
         return False
     except Exception:
@@ -284,11 +294,13 @@ def ensure_image_async(prefix: str, answer: str) -> tuple[str, bool]:
     get_executor().submit(_job)
     return path, False
 
-# ===================== 상태 기본값 =====================
+# ===================== 상태 기본값(힌트 표시 범위 수정) =====================
 defaults = dict(
     page="home", started=False, score=0, best=0, used=set(),
     current=(None,None), next_item=None,
-    duration=90, threshold=0.85, hint_used_total=0, show_hint=False,
+    duration=90, threshold=0.85,
+    hint_used_total=0,
+    hint_shown_for=None,        # ← 현재 문제에만 힌트 표시(문제 식별자 보관)
     end_time=None, reveal_text="", reveal_success=False, just_correct=False
 )
 for k,v in defaults.items():
@@ -300,6 +312,7 @@ def start_game():
     ss.score = 0
     ss.used = set()
     ss.hint_used_total = 0
+    ss.hint_shown_for = None
     ss.current = pick_next(ss.used)
     ss.next_item = pick_next(ss.used)
     # 현재/다음 이미지 선작업
@@ -307,7 +320,6 @@ def start_game():
     ensure_image_async(*ss.next_item)
     ss.end_time = time.time() + ss.duration
     ss.page = "game"
-    ss.show_hint = False
 
 def process_submission(user_text: str):
     """Enter/제출 버튼 공통 경로. 제출하면 항상 다음 문제로."""
@@ -332,6 +344,9 @@ def process_submission(user_text: str):
     ss.current = ss.next_item
     ss.next_item = pick_next(ss.used)
 
+    # 힌트는 "현재 문제에서만" 보이므로 전환 시 해제
+    ss.hint_shown_for = None
+
     # 이미지 선/즉시 준비
     ensure_image_async(*ss.current)
     ensure_image_async(*ss.next_item)
@@ -344,29 +359,38 @@ def skip_question():
     ss.used.add(prefix)
     ss.current = ss.next_item
     ss.next_item = pick_next(ss.used)
-    ss.show_hint = False
+    ss.hint_shown_for = None
     ensure_image_async(*ss.current)
     ensure_image_async(*ss.next_item)
     st.rerun()
 
-def use_hint():
-    if ss.hint_used_total < 2 and not ss.show_hint and ss.started:
-        ss.hint_used_total += 1
-        ss.show_hint = True
-        st.rerun()
+def use_hint_for_current():
+    """현재 문제에 대해 힌트 1회만 노출, 사용량 1 증가. 다음 문제로 넘어가면 자동 숨김."""
+    if not ss.started or not ss.current[0]:
+        return
+    if ss.hint_used_total >= 2:
+        return
+    # 현재 문제 식별자
+    cur_id = ss.current[0]
+    # 이미 이 문제에서 힌트를 본 경우 재사용 금지(버튼 비활성화와 동일)
+    if ss.hint_shown_for == cur_id:
+        return
+    ss.hint_used_total += 1
+    ss.hint_shown_for = cur_id
+    st.rerun()
 
 def go_home():
     ss.page = "home"
     ss.started = False
     ss.reveal_text = ""
-    ss.show_hint = False
+    ss.hint_shown_for = None
     play_tick_sound(False)
 
 # ===================== 홈 화면 =====================
 if ss.page == "home":
     play_tick_sound(False)
     st.markdown("<h1 style='text-align:center'>🧩 속담 이어말하기 게임</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align:center'>제한 시간 안에 많이 맞혀보세요! (오타 일부 허용)</p>", unsafe_allow_html=True)
+    st.markdown(f"<p style='text-align:center'>제한 시간 안에 많이 맞혀보세요! (총 {TOTAL_Q}문제, 오타 일부 허용)</p>", unsafe_allow_html=True)
     _, mid, _ = st.columns([1,2,1])
     with mid:
         st.subheader("게임 설정")
@@ -413,7 +437,7 @@ if ss.page == "game":
             # 현재 문제 이미지 (비동기 준비 + 자동 갱신)
             img_path, ready = ensure_image_async(prefix, answer)
             if ready:
-                st.image(img_path, use_column_width=True, caption="AI 그림")
+                st.image(img_path, use_column_width=True, caption="AI 그림(선 스케치)")
             else:
                 st.markdown("<div style='text-align:center; color:#888'>그림 준비 중…</div>", unsafe_allow_html=True)
 
@@ -430,20 +454,25 @@ if ss.page == "game":
 
             with st.form("answer_form", clear_on_submit=True):  # 제출 후에만 입력칸이 비워짐
                 st.text_input("정답", key=ANSWER_KEY, label_visibility="collapsed",
-                              help="오타 조금은 괜찮아요!")  # placeholder 제거(요청 반영)
+                              help="오타 조금은 괜찮아요!")  # placeholder 제거
                 submitted = st.form_submit_button("제출", use_container_width=True)
                 if submitted:
                     process_submission(st.session_state.get(ANSWER_KEY, ""))
 
             colH, colS = st.columns([1,1])
-            colH.button("💡 힌트", use_container_width=True,
-                        disabled=(not ss.started) or (ss.hint_used_total>=2) or ss.show_hint or remaining==0,
-                        on_click=use_hint)
+            # ❗ 버튼 비활성화 조건: 게임중 + 남은시간>0 + 남은 힌트>0 + 아직 '이 문제'에서 힌트 안씀
+            colH.button(
+                "💡 힌트",
+                use_container_width=True,
+                disabled=(not ss.started) or (remaining==0) or (ss.hint_used_total>=2) or (ss.hint_shown_for == prefix),
+                on_click=use_hint_for_current
+            )
             colS.button("스킵", use_container_width=True,
                         disabled=(not ss.started or remaining==0),
                         on_click=skip_question)
 
-            if ss.show_hint:
+            # 이 문제에서 힌트를 눌렀을 때만 노출
+            if ss.hint_shown_for == prefix:
                 st.info(f"힌트: **{chosung_hint(answer)}**")
 
             st.markdown("</div>", unsafe_allow_html=True)
