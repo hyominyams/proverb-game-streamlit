@@ -23,14 +23,16 @@ st.markdown("""
 @st.cache_data(show_spinner="문제 파일을 읽고 있습니다...")
 def load_question_bank() -> List[Dict[str, str]]:
     path = "question.csv"
-    if not os.path.exists(path): return []
+    if not os.path.exists(path):
+        return []
     bank: List[Dict[str, str]] = []
     with open(path, newline="", encoding="utf-8") as f:
         r = csv.DictReader(f)
         for row in r:
             p = (row.get("prefix") or "").strip()
             a = (row.get("answer") or "").strip()
-            if p and a: bank.append({"prefix": p, "answer": a})
+            if p and a:
+                bank.append({"prefix": p, "answer": a})
     random.shuffle(bank)
     return bank
 
@@ -38,6 +40,8 @@ BANK = load_question_bank()
 if not BANK:
     st.error("`question.csv` 파일을 찾을 수 없거나 내용이 비어 있습니다. CSV 파일을 확인하고 GitHub에 추가해주세요.")
     st.stop()
+
+TOTAL_Q = len(BANK)
 
 # ===================== 유틸 (채점/힌트/선택) =====================
 def normalize(t: str) -> str:
@@ -71,13 +75,152 @@ def pick_next(used:set) -> Tuple[str,str]:
     row = random.choice(remain)
     return row["prefix"], row["answer"]
 
-# ===================== 사운드/이펙트/UI (최종 통합) =====================
-def render_stats_and_sound_manager(score: int, end_ts: float, hints: int, tick_sound_on: bool, play_correct_now: bool):
-    now_rem = max(0, int(round(end_ts - time.time()))) if end_ts else 0
-    tick_sound_on_js = str(tick_sound_on).lower()
-    play_correct_now_js = str(play_correct_now).lower()
-    end_ts_js = int(end_ts * 1000) if end_ts else 0
+# ===================== 사운드/이펙트/UI =====================
+# 오디오 매니저 (WebAudio + HTMLAudio 이중 백업)
+SOUND_MANAGER_HTML = """
+<script>
+(function () {
+  if (window.soundManager) return;
 
+  // 짧은 비프/딩 샘플 (WAV Base64) — HTMLAudio 백업용
+  const TICK_SRC = "data:audio/wav;base64,UklGRnwpAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YVgpAAAAAAAfAFgAQgBBAEAAPwA9ADoANgAzAC8AKgAlACEAHwAcABoAFgATABAAEAAQABAAEAAQABAAEAAQABAAEAAQABAAEAA8ADwAOAA4ADgAOAA4ADgAOAA4ADwAPABAAEAAQABAAEAAQABAAEAAQABAAEwAWABoAHAAfACEAJQApACsALwAzADYANwA6AD0APwBAAEEAQgBZAQAA";
+  const DING_SRC = "data:audio/wav;base64,UklGRlVvAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YXV3AAAAAAAdAFUAPgA7ADcAMwAwACwAKAAkACEAHwAcABoAFgATABAAEAAQABAAEAAQABAAEAAQABAAEAAQABEAEQARABEAEQARABEAERAREBMQEwATABMAEwATABMAGAAcAB8AIQAkACgALAAwADMANwA6AD4AUABWAWEAYgBjAGQA";
+
+  let audioCtx = null;
+  let unlocked = false;
+  let tickInterval = null;
+
+  const tickAudio = new Audio(TICK_SRC);
+  tickAudio.preload = "auto";
+  const correctAudio = new Audio(DING_SRC);
+  correctAudio.preload = "auto";
+
+  function ensureInit() {
+    try {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (audioCtx && audioCtx.state === "suspended") {
+        audioCtx.resume();
+      }
+    } catch (e) {}
+
+    // HTMLAudio도 한 번 재생 시도 → 사용자 제스처 이후 자동재생 허용 상태로 전환
+    if (!unlocked) {
+      const a = tickAudio.cloneNode(true);
+      a.volume = 0.4;
+      a.play().then(() => { unlocked = true; }).catch(() => {});
+    }
+  }
+
+  const unlockHandler = () => {
+    ensureInit();
+    if (unlocked || (audioCtx && audioCtx.state === "running")) {
+      document.removeEventListener("click", unlockHandler);
+      document.removeEventListener("keydown", unlockHandler);
+      document.removeEventListener("touchstart", unlockHandler);
+    }
+  };
+  document.addEventListener("click", unlockHandler);
+  document.addEventListener("keydown", unlockHandler);
+  document.addEventListener("touchstart", unlockHandler, { passive: true });
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) ensureInit();
+  });
+
+  function playTick() {
+    if (audioCtx && audioCtx.state === "running") {
+      const t = audioCtx.currentTime;
+      const o = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      o.type = "sine";
+      o.frequency.setValueAtTime(1000, t);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.2, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.10);
+      o.connect(g); g.connect(audioCtx.destination);
+      o.start(t); o.stop(t + 0.12);
+    } else {
+      const a = tickAudio.cloneNode(true);
+      a.volume = 0.6;
+      a.play().catch(() => {});
+    }
+  }
+
+  function playCorrect() {
+    if (audioCtx && audioCtx.state === "running") {
+      const t = audioCtx.currentTime;
+      [[523.25,0.00],[783.99,0.12],[1046.5,0.24]].forEach(([f, d]) => {
+        const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+        o.type = "triangle";
+        o.frequency.setValueAtTime(f, t + d);
+        g.gain.setValueAtTime(0.0001, t + d);
+        g.gain.exponentialRampToValueAtTime(0.35, t + d + 0.03);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + d + 0.18);
+        o.connect(g); g.connect(audioCtx.destination);
+        o.start(t + d); o.stop(t + d + 0.21);
+      });
+    } else {
+      const a = correctAudio.cloneNode(true);
+      a.volume = 0.65;
+      a.play().catch(() => {});
+    }
+  }
+
+  function startTicking() {
+    ensureInit();
+    if (tickInterval) return;
+    // 시작 즉시 한 번 재생해서 "켜졌다"는 느낌 제공
+    playTick();
+    tickInterval = setInterval(playTick, 1000);
+  }
+
+  function stopTicking() {
+    if (tickInterval) {
+      clearInterval(tickInterval);
+      tickInterval = null;
+    }
+  }
+
+  window.soundManager = { ensureInit, startTicking, stopTicking, playTick, playCorrect };
+})();
+</script>
+"""
+html(SOUND_MANAGER_HTML, height=0)
+
+def control_ticking_sound(running: bool):
+    cmd = (
+        "window.soundManager && (window.soundManager.ensureInit(), window.soundManager.startTicking());"
+        if running else
+        "window.soundManager && window.soundManager.stopTicking();"
+    )
+    html(f"<script>{cmd}</script>", height=0)
+
+def play_correct_effect():
+    st.balloons()
+    html("""
+    <div id="confetti" style="position:fixed;left:50%;bottom:-20px;transform:translateX(-50%);font-size:40px;opacity:0;transition:all .6s ease-out;z-index:9999;">🎉🎊✨</div>
+    <script>
+        window.soundManager && window.soundManager.playCorrect();
+        const el = document.getElementById('confetti');
+        if(el){
+            setTimeout(() => { el.style.opacity=1; el.style.bottom='40%'; }, 10);
+            setTimeout(() => { el.style.opacity=0; el.remove(); }, 900);
+        }
+    </script>
+    """, height=0)
+
+def flash_answer_overlay(text:str, success:bool):
+    color = "#10b981" if success else "#ef4444"
+    html(
+        f"""<style>@keyframes pop{{0%{{transform:scale(.9);opacity:.0;}}50%{{transform:scale(1.03);opacity:1;}}100%{{transform:scale(1.0);opacity:1;}}}}</style>
+        <div id="ansflash" style="position:fixed;left:50%;top:12%;transform:translateX(-50%);background:{color};color:white;padding:10px 18px;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.2);font-size:18px;font-weight:700;z-index:9999;animation:pop .25s ease-out;">{text}</div>
+        <script>setTimeout(()=>{{const el=document.getElementById('ansflash');if(el)el.remove();}},1200);</script>""",
+        height=0
+    )
+
+def render_stats(score:int, end_ts:float, hints:int):
+    now_rem = max(0, int(round(end_ts - time.time()))) if end_ts else 0
     html(f"""
     <div class="stats">
       <div class="card"><div class="label">점수</div><div class="value">{score}</div></div>
@@ -91,69 +234,21 @@ def render_stats_and_sound_manager(score: int, end_ts: float, hints: int, tick_s
       .card .value {{ font-size:2.2rem; font-weight:800; line-height:1.1; }}
     </style>
     <script>
-    (function() {{
-        if (!window.soundManager) {{
-            const sm = {{ audioCtx: null, tickInterval: null }};
-            const initAudioContext = () => {{
-                if (!sm.audioCtx) {{
-                    try {{
-                        sm.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                        if (sm.audioCtx.state === 'suspended') sm.audioCtx.resume();
-                    }} catch (e) {{ console.error("AudioContext not supported"); }}
-                }}
-            }};
-            document.addEventListener('click', initAudioContext, {{ once: true }});
-
-            sm.playTick = () => {{
-                if (!sm.audioCtx || sm.audioCtx.state !== 'running') return;
-                const o = sm.audioCtx.createOscillator(), g = sm.audioCtx.createGain();
-                o.type = 'sine'; o.frequency.setValueAtTime(1200, sm.audioCtx.currentTime);
-                g.gain.setValueAtTime(0, sm.audioCtx.currentTime);
-                g.gain.linearRampToValueAtTime(0.15, sm.audioCtx.currentTime + 0.01);
-                g.gain.linearRampToValueAtTime(0, sm.audioCtx.currentTime + 0.1);
-                o.connect(g); g.connect(sm.audioCtx.destination); o.start(); o.stop(sm.audioCtx.currentTime + 0.1);
-            }};
-
-            sm.playCorrect = () => {{
-                if (!sm.audioCtx || sm.audioCtx.state !== 'running') return;
-                const t = sm.audioCtx.currentTime;
-                [523.25, 783.99, 1046.5].forEach((f, i) => {{
-                    const o = sm.audioCtx.createOscillator(), g = sm.audioCtx.createGain();
-                    o.type = 'triangle'; o.frequency.setValueAtTime(f, t + i * 0.12);
-                    g.gain.setValueAtTime(0, t + i * 0.12);
-                    g.gain.exponentialRampToValueAtTime(0.3, t + i * 0.12 + 0.03);
-                    g.gain.exponentialRampToValueAtTime(0.0001, t + i * 0.12 + 0.18);
-                    o.connect(g); g.connect(sm.audioCtx.destination);
-                    o.start(t + i * 0.12); o.stop(t + i * 0.12 + 0.2);
-                }});
-            }};
-            
-            sm.startTicking = () => {{ if (!sm.tickInterval) sm.tickInterval = setInterval(sm.playTick, 1000); }};
-            sm.stopTicking = () => {{ if (sm.tickInterval) {{ clearInterval(sm.tickInterval); sm.tickInterval = null; }} }};
-            window.soundManager = sm;
-        }}
-
-        if ({tick_sound_on_js}) window.soundManager.startTicking();
-        else window.soundManager.stopTicking();
-
-        if ({play_correct_now_js}) window.soundManager.playCorrect();
-
-        const endTs = {end_ts_js};
+      (function(){{
+        const end = {int(end_ts*1000) if end_ts else 0};
         const timerDiv = document.getElementById('timer_div');
-        const updateTimer = () => {{
-            if (!endTs || !timerDiv) return;
-            const rem = Math.max(0, Math.round((endTs - Date.now()) / 1000));
-            timerDiv.textContent = rem.toString();
-        }};
-        if (window.mainTimerInterval) clearInterval(window.mainTimerInterval);
-        updateTimer();
-        window.mainTimerInterval = setInterval(updateTimer, 1000);
-    }})();
+        if (!window.mainTimerInterval) {{
+            const update = () => {{
+                if (!end || !timerDiv) return;
+                const rem = Math.max(0, Math.round((end - Date.now())/1000));
+                timerDiv.textContent = rem.toString();
+            }};
+            update();
+            window.mainTimerInterval = setInterval(update, 1000);
+        }}
+      }})();
     </script>
     """, height=118)
-
-def flash_answer_overlay(text:str, success:bool):
-    color = "#10b981" if success else "#ef4444"; html(f"""<style>@keyframes pop{{0%{{transform:scale(.9);opacity:.0;}}50%{{transform:scale(1.03);opacity:1;}}100%{{transform:scale(1.0);opacity:1;}}}}</style><div id="ansflash" style="position:fixed;left:50%;top:12%;transform:translateX(-50%);background:{color};color:white;padding:10px 18px;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.2);font-size:18px;font-weight:700;z-index:9999;animation:pop .25s ease-out;">{text}</div><script>setTimeout(()=>{{const el=document.getElementById('ansflash');if(el)el.remove();}},1200);</script>""", height=0)
 
 # ===================== 상태 기본값 =====================
 defaults = dict(page="home", started=False, score=0, best=0, used=set(), current=(None,None),
@@ -191,21 +286,25 @@ def use_hint_for_current():
     ss.hint_used_total += 1; ss.hint_shown_for = cur_id; st.rerun()
 
 def go_home():
-    ss.page="home"; ss.started=False; ss.reveal_text=""; ss.hint_shown_for=None
+    ss.page="home"; ss.started=False; ss.reveal_text=""; ss.hint_shown_for=None; control_ticking_sound(False)
 
 # ===================== 화면 구성 =====================
 if ss.page == "home":
-    # 메인 화면 중앙 정렬을 위한 CSS
+    control_ticking_sound(False)
+    # 메인 화면 중앙 정렬
     st.markdown("""
     <style>
     div[data-testid="stVerticalBlock"] > [data-testid="stVerticalBlock"] > [data-testid="stVerticalBlock"] > [data-testid="stVerticalBlock"] {
-        min-height: 70vh; display: flex; flex-direction: column; justify-content: center;
+        min-height: 70vh;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
     }
     </style>
     """, unsafe_allow_html=True)
     
     st.markdown("<h1 style='text-align:center'>🧩 속담 이어말하기 게임</h1>", unsafe_allow_html=True)
-    st.markdown(f"<p style='text-align:center'>제한 시간 안에 많이 맞혀보세요! (총 {len(BANK)}문제)</p>", unsafe_allow_html=True)
+    st.markdown(f"<p style='text-align:center'>제한 시간 안에 많이 맞혀보세요! (총 {TOTAL_Q}문제)</p>", unsafe_allow_html=True)
     
     _, mid, _ = st.columns([1, 2, 1])
     with mid:
@@ -220,15 +319,12 @@ elif ss.page == "game":
     remaining = max(0, int(round((ss.end_time or time.time()) - time.time())))
 
     if ss.started and remaining == 0:
-        ss.started = False; st.rerun()
+        control_ticking_sound(False); ss.started = False; st.rerun()
 
     if ss.started:
-        render_stats_and_sound_manager(ss.score, ss.end_time, ss.hint_used_total, tick_sound_on=True, play_correct_now=ss.just_correct)
-        if ss.just_correct:
-            st.balloons()
-            ss.just_correct = False
-        
+        render_stats(ss.score, ss.end_time or time.time(), ss.hint_used_total); control_ticking_sound(True)
         prefix, answer = ss.current
+        
         _, mid, _ = st.columns([1, 2, 1])
         with mid:
             st.markdown(f"""<div style="border:1px solid #e9ecef;border-radius:14px;padding:24px 18px;box-shadow:0 2px 8px rgba(0,0,0,.04);margin-top:2px;"><div style="text-align:center;font-size:2.35rem;font-weight:800;">{prefix}</div></div>""", unsafe_allow_html=True)
@@ -240,18 +336,20 @@ elif ss.page == "game":
                 st.text_input("정답", key=ANSWER_KEY, label_visibility="collapsed", help="오타 조금은 괜찮아요!")
                 submitted = st.form_submit_button("제출", use_container_width=True)
                 if submitted: process_submission(st.session_state.get(ANSWER_KEY, ""))
-            
+
             colH, colS = st.columns([1, 1])
-            colH.button("💡 힌트", use_container_width=True, disabled=(remaining==0) or (ss.hint_used_total>=2) or (ss.hint_shown_for == prefix), on_click=use_hint_for_current)
+            colH.button("💡 힌트", use_container_width=True,
+                        disabled=(remaining==0) or (ss.hint_used_total>=2) or (ss.hint_shown_for == prefix),
+                        on_click=use_hint_for_current)
             colS.button("➡️ 스킵", use_container_width=True, disabled=(remaining==0), on_click=skip_question)
             
             if ss.hint_shown_for == prefix:
                 st.info(f"힌트: **{chosung_hint(answer)}**")
 
         if ss.reveal_text: flash_answer_overlay(ss.reveal_text, ss.reveal_success); ss.reveal_text = ""
+        if ss.just_correct: play_correct_effect(); ss.just_correct = False
 
     elif not ss.started and ss.page == "game":
-        render_stats_and_sound_manager(ss.score, ss.end_time, ss.hint_used_total, tick_sound_on=False, play_correct_now=False)
         st.markdown("### ⏰ TIME OUT!")
         st.success(f"최종 점수: {ss.score}점 / 힌트 사용 {ss.hint_used_total}/2")
         col = st.columns([1, 2, 1])[1]
