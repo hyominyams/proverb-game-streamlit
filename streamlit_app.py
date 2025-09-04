@@ -19,10 +19,10 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ===================== CSV 로드 =====================
+# ===================== CSV 로드(딕셔너리 완전 제거) =====================
 CSV_CANDIDATES = ["question.csv", "data/question.csv"]
 
-@st.cache_data(show_spinner="문제 파일(question.csv)을 읽고 있습니다...")
+@st.cache_data(show_spinner=False)
 def load_question_bank() -> List[Dict[str, str]]:
     path = None
     for cand in CSV_CANDIDATES:
@@ -33,25 +33,20 @@ def load_question_bank() -> List[Dict[str, str]]:
     if path:
         with open(path, newline="", encoding="utf-8") as f:
             r = csv.DictReader(f)
-            # 허용 헤더: prefix, answer (대소문자 무시)
             for row in r:
                 p = (row.get("prefix") or row.get("PREFIX") or "").strip()
                 a = (row.get("answer") or row.get("ANSWER") or "").strip()
                 if p and a:
                     bank.append({"prefix": p, "answer": a})
-    if not bank:
-        # FALLBACK 데이터를 삭제하고, 파일이 없을 경우 에러 메시지를 표시
-        st.error("❌ question.csv 파일을 찾을 수 없거나 내용이 비어있습니다. 파일을 확인해주세요.")
-        st.stop()
     random.shuffle(bank)
     return bank
 
 BANK = load_question_bank()
-# 앱 시작 시 한 번만 로드 성공 메시지 표시
-if '__loaded_toast__' not in ss:
-    st.toast(f"✅ {len(BANK)}개의 문제를 불러왔습니다.")
-    ss['__loaded_toast__'] = True
+if not BANK:
+    st.error("`question.csv` 또는 `data/question.csv`를 찾을 수 없거나, `prefix,answer` 데이터가 비어 있습니다. CSV를 업로드한 뒤 다시 실행하세요.")
+    st.stop()
 
+TOTAL_Q = len(BANK)
 
 # ===================== 유틸(채점/힌트/선택) =====================
 def normalize(t: str) -> str:
@@ -83,26 +78,116 @@ def pick_next(used:set) -> Tuple[str,str]:
     row = random.choice(remain)
     return row["prefix"], row["answer"]
 
-# ===================== 사운드/이펙트 (수정 없음) =====================
+# ===================== 사운드/이펙트 =====================
 def play_tick_sound(running: bool):
     if running:
-        html("""...""", height=0) # 내용은 생략 (기존 코드와 동일)
+        html("""
+        <script>
+        (function(){
+          if (window._tickInterval) return;
+          const AC = window.AudioContext || window.webkitAudioContext;
+          const ctx = new AC();
+          const resume = ()=>{ ctx.resume(); document.removeEventListener('click', resume); };
+          document.addEventListener('click', resume, {once:true});
+          function tick(){
+            const o = ctx.createOscillator(), g = ctx.createGain();
+            o.type='square'; o.frequency.value=1000;
+            g.gain.setValueAtTime(0.0001, ctx.currentTime);
+            g.gain.exponentialRampToValueAtTime(0.2, ctx.currentTime+0.02);
+            g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime+0.08);
+            o.connect(g); g.connect(ctx.destination); o.start(); o.stop(ctx.currentTime+0.1);
+          }
+          window._tickInterval = setInterval(tick, 1000);
+        })();
+        </script>""", height=0)
     else:
-        html("""...""", height=0)
+        html("""<script> if(window._tickInterval){clearInterval(window._tickInterval);window._tickInterval=null;} </script>""", height=0)
 
 def play_correct_sound_and_confetti():
     st.balloons()
-    html("""...""", height=0)
+    html("""
+    <div id="confetti" style="
+      position:fixed; left:50%; bottom:-20px; transform:translateX(-50%);
+      font-size:40px; opacity:0; transition: all .6s ease-out; z-index:9999;">🎉🎊✨</div>
+    <script>
+      (function(){
+        const AC = window.AudioContext || window.webkitAudioContext;
+        const ctx = new AC(); const t = ctx.currentTime;
+        function beep(f, d, du){
+          const o=ctx.createOscillator(), g=ctx.createGain();
+          o.type='triangle'; o.frequency.value=f;
+          g.gain.setValueAtTime(0.0001, t+d);
+          g.gain.exponentialRampToValueAtTime(0.35, t+d+0.03);
+          g.gain.exponentialRampToValueAtTime(0.0001, t+d+du);
+          o.connect(g); o.start(t+d); o.stop(t+d+du+0.03);
+          g.connect(ctx.destination);
+        }
+        beep(523.25,0.00,0.12); beep(783.99,0.12,0.12); beep(1046.5,0.24,0.18);
+        const el = document.getElementById('confetti');
+        setTimeout(()=>{ el.style.opacity=1; el.style.bottom='40%'; }, 10);
+        setTimeout(()=>{ el.style.opacity=0; el.remove(); }, 900);
+      })();
+    </script>
+    """, height=0)
 
 def flash_answer_overlay(text:str, success:bool):
     color = "#10b981" if success else "#ef4444"
-    html(f"""...""", height=0)
+    html(f"""
+    <style>
+      @keyframes pop {{
+        0%  {{ transform: scale(.9); opacity:.0; }}
+        50% {{ transform: scale(1.03); opacity:1; }}
+        100% {{ transform: scale(1.0); opacity:1; }}
+      }}
+    </style>
+    <div id="ansflash" style="
+      position:fixed; left:50%; top:12%; transform:translateX(-50%);
+      background:{color}; color:white; padding:10px 18px; border-radius:12px;
+      box-shadow:0 8px 24px rgba(0,0,0,.2); font-size:18px; font-weight:700;
+      z-index:9999; animation: pop .25s ease-out;">{text}</div>
+    <script>
+      setTimeout(() => {{
+        const el = document.getElementById('ansflash');
+        if (el) el.remove();
+      }}, 1200);
+    </script>
+    """, height=0)
 
 def render_stats(score:int, end_ts:float, hints:int):
     now_rem = max(0, int(round(end_ts - time.time()))) if end_ts else 0
-    html(f"""...""", height=118)
+    html(f"""
+    <div class="stats">
+      <div class="card"><div class="label">점수</div><div class="value">{score}</div></div>
+      <div class="card"><div class="label">남은 시간</div><div class="value"><span id="timer_div">{now_rem}</span>s</div></div>
+      <div class="card"><div class="label">힌트 사용</div><div class="value">{hints}/2</div></div>
+    </div>
+    <style>
+      .stats {{ display:flex; gap:12px; justify-content:center; margin:18px 0 10px; }}
+      .card {{ padding:12px 16px; border:1px solid #e9ecef; border-radius:12px;
+               min-width:160px; text-align:center; box-shadow:0 2px 8px rgba(0,0,0,.04); }}
+      .card .label {{ font-size:.95rem; color:#666; margin-bottom:6px; }}
+      .card .value {{ font-size:2.2rem; font-weight:800; line-height:1.1; }}
+      #timer_div {{ font-size:2.2rem; }}
+    </style>
+    <script>
+      (function(){{
+        const end = {int(end_ts*1000) if end_ts else 0};
+        function update(){{
+          if (!end) return;
+          const now = Date.now();
+          let rem = Math.max(0, Math.round((end - now)/1000));
+          const el = document.getElementById('timer_div');
+          if (el) el.textContent = rem.toString();
+        }}
+        update();
+        if (!window.__timerInterval) {{
+          window.__timerInterval = setInterval(update, 1000);
+        }}
+      }})();
+    </script>
+    """, height=118)
 
-# ===================== Gemini 이미지 (비동기+캐시) =====================
+# ===================== Gemini 이미지 (비동기+캐시, 스케치 지시) =====================
 IMG_DIR = pathlib.Path("assets/images")
 IMG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -132,26 +217,63 @@ def _generate_image_with_gemini(prefix: str, answer: str, out_path: str) -> bool
     if not api_key:
         return False
 
+    # ★ 빠르고 단순한 '선 스케치'를 유도하는 프롬프트
+    sketch_prompt = (
+        "instructions: 아이들이 속담을 잘 이해할 수 있도록 아이 수준에서 '스케치'를 그려주세요. "
+        "많은 채색과 디테일한 디자인은 피하고, 학생들이 쉽게 특징을 잡을 수 있도록 '간단한 선 스케치'로 그립니다. "
+        "모노톤 또는 채색 최소화, 단순 도형 위주. 텍스트(글자)는 그림에 넣지 마세요. 밝고 친근한 느낌."
+    )
+    prompt = f"{sketch_prompt}\n속담: '{prefix} … {answer}'"
+
     try:
         genai.configure(api_key=api_key)
-        # 3번 요청: 프롬프트를 빠르고 간단한 스케치 스타일로 변경
-        prompt = (
-            "간단한 선 스케치 스타일. 아이들이 속담을 쉽게 이해할 수 있도록, "
-            "채색이나 복잡한 디자인 없이 특징만 빠르게 그려줘. "
-            f"속담: '{prefix} … {answer}'. "
-            "그림에 글자는 절대 넣지마."
-        )
-        model = genai.GenerativeModel("gemini-1.5-flash") # 이미지 생성 가능한 모델
-        response = model.generate_content(prompt, generation_config={"response_mime_type": "image/png"})
 
-        if response.parts:
-            pathlib.Path(out_path).write_bytes(response.parts[0].inline_data.data)
-            return True
+        # 1) 가장 빠른 후보 먼저 시도
+        try:
+            model = genai.GenerativeModel("imagen-3.0-fast")
+            if hasattr(model, "generate_image"):
+                img = model.generate_image(prompt=prompt)
+                data = getattr(img, "bytes", None) or getattr(img, "image_bytes", None)
+                if data:
+                    pathlib.Path(out_path).write_bytes(data)
+                    return True
+        except Exception:
+            pass
+
+        # 2) 구버전/호환 경로
+        try:
+            if hasattr(genai, "generate_images"):
+                res = genai.generate_images(model="imagegeneration", prompt=prompt)
+                img = res.images[0]
+                data = getattr(img, "bytes", None) or getattr(img, "image_bytes", None) or getattr(img, "data", None)
+                if data:
+                    pathlib.Path(out_path).write_bytes(data)
+                    return True
+        except Exception:
+            pass
+
+        # 3) 기본 imagen-3.0 최후 fallback
+        try:
+            model = genai.GenerativeModel("imagen-3.0")
+            if hasattr(model, "generate_image"):
+                img = model.generate_image(prompt=prompt)
+                data = getattr(img, "bytes", None) or getattr(img, "image_bytes", None)
+                if data:
+                    pathlib.Path(out_path).write_bytes(data)
+                    return True
+        except Exception:
+            pass
+
         return False
     except Exception:
         return False
 
 def ensure_image_async(prefix: str, answer: str) -> tuple[str, bool]:
+    """
+    이미지 경로와 준비 여부를 반환.
+    준비됨: (path, True) → 즉시 st.image
+    준비중: (path, False) → '준비 중' 텍스트 표시, 스레드에서 생성 시작
+    """
     path = image_path_for(prefix, answer)
     if os.path.exists(path):
         return path, True
@@ -172,11 +294,13 @@ def ensure_image_async(prefix: str, answer: str) -> tuple[str, bool]:
     get_executor().submit(_job)
     return path, False
 
-# ===================== 상태 기본값 =====================
+# ===================== 상태 기본값(힌트 표시 범위 수정) =====================
 defaults = dict(
     page="home", started=False, score=0, best=0, used=set(),
     current=(None,None), next_item=None,
-    duration=90, threshold=0.85, hint_used_total=0, show_hint=False,
+    duration=90, threshold=0.85,
+    hint_used_total=0,
+    hint_shown_for=None,        # ← 현재 문제에만 힌트 표시(문제 식별자 보관)
     end_time=None, reveal_text="", reveal_success=False, just_correct=False
 )
 for k,v in defaults.items():
@@ -188,20 +312,23 @@ def start_game():
     ss.score = 0
     ss.used = set()
     ss.hint_used_total = 0
+    ss.hint_shown_for = None
     ss.current = pick_next(ss.used)
     ss.next_item = pick_next(ss.used)
+    # 현재/다음 이미지 선작업
     ensure_image_async(*ss.current)
     ensure_image_async(*ss.next_item)
     ss.end_time = time.time() + ss.duration
     ss.page = "game"
-    ss.show_hint = False
 
 def process_submission(user_text: str):
-    if not (ss.started and ss.current[0]):
+    """Enter/제출 버튼 공통 경로. 제출하면 항상 다음 문제로."""
+    if not (ss.started and ss.current[0]): 
         return
     prefix, answer = ss.current
     is_correct = (fuzzy_match(user_text or "", answer) >= ss.threshold)
 
+    # 현재 문제 기준으로 정답 공개
     ss.reveal_text = f"정답: {answer}"
     ss.reveal_success = is_correct
 
@@ -212,16 +339,19 @@ def process_submission(user_text: str):
     else:
         ss.just_correct = False
 
+    # 다음 문제로 전환 + 새로운 next 준비
     ss.used.add(prefix)
     ss.current = ss.next_item
     ss.next_item = pick_next(ss.used)
-    # 1번 요청: 다음 문제로 넘어갈 때 힌트 상태 초기화
-    ss.show_hint = False
 
+    # 힌트는 "현재 문제에서만" 보이므로 전환 시 해제
+    ss.hint_shown_for = None
+
+    # 이미지 선/즉시 준비
     ensure_image_async(*ss.current)
     ensure_image_async(*ss.next_item)
 
-    st.rerun()
+    st.rerun()  # 즉시 갱신
 
 def skip_question():
     if not ss.started: return
@@ -229,29 +359,38 @@ def skip_question():
     ss.used.add(prefix)
     ss.current = ss.next_item
     ss.next_item = pick_next(ss.used)
-    ss.show_hint = False
+    ss.hint_shown_for = None
     ensure_image_async(*ss.current)
     ensure_image_async(*ss.next_item)
     st.rerun()
 
-def use_hint():
-    if ss.hint_used_total < 2 and not ss.show_hint and ss.started:
-        ss.hint_used_total += 1
-        ss.show_hint = True
-        st.rerun()
+def use_hint_for_current():
+    """현재 문제에 대해 힌트 1회만 노출, 사용량 1 증가. 다음 문제로 넘어가면 자동 숨김."""
+    if not ss.started or not ss.current[0]:
+        return
+    if ss.hint_used_total >= 2:
+        return
+    # 현재 문제 식별자
+    cur_id = ss.current[0]
+    # 이미 이 문제에서 힌트를 본 경우 재사용 금지(버튼 비활성화와 동일)
+    if ss.hint_shown_for == cur_id:
+        return
+    ss.hint_used_total += 1
+    ss.hint_shown_for = cur_id
+    st.rerun()
 
 def go_home():
     ss.page = "home"
     ss.started = False
     ss.reveal_text = ""
-    ss.show_hint = False
+    ss.hint_shown_for = None
     play_tick_sound(False)
 
 # ===================== 홈 화면 =====================
 if ss.page == "home":
     play_tick_sound(False)
     st.markdown("<h1 style='text-align:center'>🧩 속담 이어말하기 게임</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align:center'>제한 시간 안에 많이 맞혀보세요! (오타 일부 허용)</p>", unsafe_allow_html=True)
+    st.markdown(f"<p style='text-align:center'>제한 시간 안에 많이 맞혀보세요! (총 {TOTAL_Q}문제, 오타 일부 허용)</p>", unsafe_allow_html=True)
     _, mid, _ = st.columns([1,2,1])
     with mid:
         st.subheader("게임 설정")
@@ -262,9 +401,11 @@ if ss.page == "home":
 
 # ===================== 게임 화면 =====================
 if ss.page == "game":
+    # 1초마다 서버 동기화(타임아웃/이미지 준비 반영)
     if hasattr(st, "autorefresh"):
         st.autorefresh(interval=1000, key="__ticker__")
 
+    # 문제 보장
     if not ss.current or not ss.current[0]:
         ss.current = pick_next(ss.used)
 
@@ -278,44 +419,65 @@ if ss.page == "game":
             st.button("다시 시작", use_container_width=True, on_click=start_game)
             st.button("🏠 첫 화면", use_container_width=True, on_click=go_home)
     else:
+        # 상단 상태 카드 + 틱 사운드
         render_stats(ss.score, ss.end_time or time.time(), ss.hint_used_total)
         play_tick_sound(ss.started and remaining > 0)
 
+        # 문제 박스
         _, mid, _ = st.columns([1,2,1])
         with mid:
             prefix, answer = ss.current
-            st.markdown(f"""...""", unsafe_allow_html=True) # 내용은 생략
+            st.markdown(f"""
+            <div style="border:1px solid #e9ecef; border-radius:14px; padding:14px 18px;
+                        box-shadow:0 2px 8px rgba(0,0,0,.04); margin-top:2px;">
+              <div style="text-align:center; font-size:2.35rem; font-weight:800;">{prefix}</div>
+            </div>
+            """, unsafe_allow_html=True)
 
+            # 현재 문제 이미지 (비동기 준비 + 자동 갱신)
             img_path, ready = ensure_image_async(prefix, answer)
             if ready:
-                st.image(img_path, use_column_width=True, caption="AI 그림 힌트")
+                st.image(img_path, use_column_width=True, caption="AI 그림(선 스케치)")
             else:
-                st.markdown("<div style='text-align:center; color:#888'>🎨 그림 힌트 준비 중…</div>", unsafe_allow_html=True)
+                st.markdown("<div style='text-align:center; color:#888'>그림 준비 중…</div>", unsafe_allow_html=True)
 
+        # 입력/버튼 박스 — 폼(Enter/버튼 동일 경로)
         _, mid2, _ = st.columns([1,2,1])
         with mid2:
-            st.markdown("""...""", unsafe_allow_html=True) # 내용은 생략
+            st.markdown("""
+            <div style="border:1px solid #e9ecef; border-radius:14px; padding:16px 18px;
+                        box-shadow:0 2px 8px rgba(0,0,0,.04); margin-top:12px;">
+              <div style="text-align:center; font-weight:700; margin-bottom:8px">
+                정답을 입력한 뒤 Enter 키를 누르거나 '제출'을 클릭하세요
+              </div>
+            """, unsafe_allow_html=True)
 
-            with st.form("answer_form", clear_on_submit=True):
+            with st.form("answer_form", clear_on_submit=True):  # 제출 후에만 입력칸이 비워짐
                 st.text_input("정답", key=ANSWER_KEY, label_visibility="collapsed",
-                              help="오타 조금은 괜찮아요!")
+                              help="오타 조금은 괜찮아요!")  # placeholder 제거
                 submitted = st.form_submit_button("제출", use_container_width=True)
                 if submitted:
                     process_submission(st.session_state.get(ANSWER_KEY, ""))
 
             colH, colS = st.columns([1,1])
-            colH.button("💡 초성 힌트", use_container_width=True,
-                        disabled=(not ss.started) or (ss.hint_used_total>=2) or ss.show_hint or remaining==0,
-                        on_click=use_hint)
-            colS.button("➡️ 스킵", use_container_width=True,
+            # ❗ 버튼 비활성화 조건: 게임중 + 남은시간>0 + 남은 힌트>0 + 아직 '이 문제'에서 힌트 안씀
+            colH.button(
+                "💡 힌트",
+                use_container_width=True,
+                disabled=(not ss.started) or (remaining==0) or (ss.hint_used_total>=2) or (ss.hint_shown_for == prefix),
+                on_click=use_hint_for_current
+            )
+            colS.button("스킵", use_container_width=True,
                         disabled=(not ss.started or remaining==0),
                         on_click=skip_question)
 
-            if ss.show_hint:
+            # 이 문제에서 힌트를 눌렀을 때만 노출
+            if ss.hint_shown_for == prefix:
                 st.info(f"힌트: **{chosung_hint(answer)}**")
 
             st.markdown("</div>", unsafe_allow_html=True)
 
+        # 제출 직후 효과(새 런에서 표시)
         if ss.reveal_text:
             flash_answer_overlay(ss.reveal_text, ss.reveal_success)
             ss.reveal_text = ""
