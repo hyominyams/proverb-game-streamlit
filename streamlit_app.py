@@ -9,6 +9,7 @@ from streamlit.components.v1 import html
 st.set_page_config(page_title="속담 이어말하기", page_icon="🧩", layout="centered")
 ss = st.session_state
 ANSWER_KEY = "answer_box"
+ANSWER_THRESHOLD = 0.8  # 1. 정답 인정 임계값 0.8로 고정
 
 # 전역 스타일
 st.markdown("""
@@ -22,17 +23,14 @@ st.markdown("""
 @st.cache_data(show_spinner="문제 파일을 읽고 있습니다...")
 def load_question_bank() -> List[Dict[str, str]]:
     path = "question.csv"
-    if not os.path.exists(path):
-        return []
-    
+    if not os.path.exists(path): return []
     bank: List[Dict[str, str]] = []
     with open(path, newline="", encoding="utf-8") as f:
         r = csv.DictReader(f)
         for row in r:
             p = (row.get("prefix") or "").strip()
             a = (row.get("answer") or "").strip()
-            if p and a:
-                bank.append({"prefix": p, "answer": a})
+            if p and a: bank.append({"prefix": p, "answer": a})
     random.shuffle(bank)
     return bank
 
@@ -54,7 +52,7 @@ def fuzzy_match(a: str, b: str) -> float:
 
 _CHO = ["ㄱ","ㄲ","ㄴ","ㄷ","ㄸ","ㄹ","ㅁ","ㅂ","ㅃ","ㅅ","ㅆ","ㅇ","ㅈ","ㅉ","ㅊ","ㅋ","ㅌ","ㅍ","ㅎ"]
 def chosung_hint(s: str) -> str:
-    base = 0xAC00; out=[]
+    base=0xAC00; out=[]
     for ch in s:
         code = ord(ch)
         if 0xAC00 <= code <= 0xD7A3:
@@ -75,13 +73,100 @@ def pick_next(used:set) -> Tuple[str,str]:
     row = random.choice(remain)
     return row["prefix"], row["answer"]
 
-# ===================== 사운드/이펙트/UI =====================
+# ===================== 사운드/이펙트/UI (사운드 로직 개선) =====================
+def init_sound_manager():
+    html("""
+    <script>
+    (function() {
+        if (window.soundManagerInitialized) return;
+        window.soundManagerInitialized = true;
+
+        const AC = window.AudioContext || window.webkitAudioContext;
+        window.audioCtx = new AC();
+
+        // 브라우저 정책상 첫 사용자 인터랙션으로 오디오 컨텍스트를 활성화해야 함
+        const resumeAudio = () => {
+            if (window.audioCtx.state === 'suspended') {
+                window.audioCtx.resume();
+            }
+            document.removeEventListener('click', resumeAudio);
+            document.removeEventListener('touchstart', resumeAudio);
+        };
+        document.addEventListener('click', resumeAudio, { once: true });
+        document.addEventListener('touchstart', resumeAudio, { once: true });
+
+        // 틱 소리 재생 함수
+        window.playSound_tick = function() {
+            if (window.audioCtx.state !== 'running') return;
+            const o = window.audioCtx.createOscillator();
+            const g = window.audioCtx.createGain();
+            o.type = 'sine';
+            o.frequency.setValueAtTime(1200, window.audioCtx.currentTime);
+            g.gain.setValueAtTime(0.0001, window.audioCtx.currentTime);
+            g.gain.exponentialRampToValueAtTime(0.3, window.audioCtx.currentTime + 0.02);
+            g.gain.exponentialRampToValueAtTime(0.0001, window.audioCtx.currentTime + 0.08);
+            o.connect(g);
+            g.connect(window.audioCtx.destination);
+            o.start();
+            o.stop(window.audioCtx.currentTime + 0.1);
+        };
+
+        // 정답 효과음 재생 함수
+        window.playSound_correct = function() {
+            if (window.audioCtx.state !== 'running') return;
+            const t = window.audioCtx.currentTime;
+            function beep(f, d, du) {
+                const o = window.audioCtx.createOscillator(), g = window.audioCtx.createGain();
+                o.type = 'triangle';
+                o.frequency.setValueAtTime(f, t + d);
+                g.gain.setValueAtTime(0.0001, t + d);
+                g.gain.exponentialRampToValueAtTime(0.35, t + d + 0.03);
+                g.gain.exponentialRampToValueAtTime(0.0001, t + d + du);
+                o.connect(g);
+                g.connect(window.audioCtx.destination);
+                o.start(t + d);
+                o.stop(t + d + du + 0.03);
+            }
+            beep(523.25, 0.00, 0.12);
+            beep(783.99, 0.12, 0.12);
+            beep(1046.5, 0.24, 0.18);
+        };
+        
+        // 타이머 시작/중지 함수
+        window._tickInterval = null;
+        window.startTicking = function() {
+            if (window._tickInterval) return;
+            window._tickInterval = setInterval(window.playSound_tick, 1000);
+        };
+        window.stopTicking = function() {
+            if (window._tickInterval) {
+                clearInterval(window._tickInterval);
+                window._tickInterval = null;
+            }
+        };
+    })();
+    </script>
+    """, height=0)
+
 def play_tick_sound(running: bool):
-    if running: html("""<script>(function(){if(window._tickInterval)return;const AC=window.AudioContext||window.webkitAudioContext;const ctx=new AC();const resume=()=>{ctx.resume();document.removeEventListener('click',resume);};document.addEventListener('click',resume,{once:true});function tick(){const o=ctx.createOscillator(),g=ctx.createGain();o.type='square';o.frequency.value=1000;g.gain.setValueAtTime(0.0001,ctx.currentTime);g.gain.exponentialRampToValueAtTime(0.2,ctx.currentTime+0.02);g.gain.exponentialRंपToValueAtTime(0.0001,ctx.currentTime+0.08);o.connect(g);g.connect(ctx.destination);o.start();o.stop(ctx.currentTime+0.1);}window._tickInterval=setInterval(tick,1000);})();</script>""", height=0)
-    else: html("""<script>if(window._tickInterval){clearInterval(window._tickInterval);window._tickInterval=null;}</script>""", height=0)
+    if running:
+        st.components.v1.html("<script>window.startTicking && window.startTicking();</script>", height=0)
+    else:
+        st.components.v1.html("<script>window.stopTicking && window.stopTicking();</script>", height=0)
 
 def play_correct_sound_and_confetti():
-    st.balloons(); html("""<div id="confetti" style="position:fixed;left:50%;bottom:-20px;transform:translateX(-50%);font-size:40px;opacity:0;transition: all .6s ease-out;z-index:9999;">🎉🎊✨</div><script>(function(){const AC=window.AudioContext||window.webkitAudioContext;const ctx=new AC();const t=ctx.currentTime;function beep(f,d,du){const o=ctx.createOscillator(),g=ctx.createGain();o.type='triangle';o.frequency.value=f;g.gain.setValueAtTime(0.0001,t+d);g.gain.exponentialRampToValueAtTime(0.35,t+d+0.03);g.gain.exponentialRampToValueAtTime(0.0001,t+d+du);o.connect(g);g.connect(ctx.destination);o.start(t+d);o.stop(t+d+du+0.03);}beep(523.25,0.00,0.12);beep(783.99,0.12,0.12);beep(1046.5,0.24,0.18);const el=document.getElementById('confetti');setTimeout(()=>{el.style.opacity=1;el.style.bottom='40%';},10);setTimeout(()=>{el.style.opacity=0;el.remove();},900);})();</script>""", height=0)
+    st.balloons()
+    st.components.v1.html("""
+    <div id="confetti" style="position:fixed;left:50%;bottom:-20px;transform:translateX(-50%);font-size:40px;opacity:0;transition: all .6s ease-out;z-index:9999;">🎉🎊✨</div>
+    <script>
+        window.playSound_correct && window.playSound_correct();
+        const el = document.getElementById('confetti');
+        if(el){
+            setTimeout(()=>{ el.style.opacity=1; el.style.bottom='40%'; }, 10);
+            setTimeout(()=>{ el.style.opacity=0; el.remove(); }, 900);
+        }
+    </script>
+    """, height=0)
 
 def flash_answer_overlay(text:str, success:bool):
     color = "#10b981" if success else "#ef4444"; html(f"""<style>@keyframes pop{{0%{{transform:scale(.9);opacity:.0;}}50%{{transform:scale(1.03);opacity:1;}}100%{{transform:scale(1.0);opacity:1;}}}}</style><div id="ansflash" style="position:fixed;left:50%;top:12%;transform:translateX(-50%);background:{color};color:white;padding:10px 18px;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.2);font-size:18px;font-weight:700;z-index:9999;animation:pop .25s ease-out;">{text}</div><script>setTimeout(()=>{{const el=document.getElementById('ansflash');if(el)el.remove();}},1200);</script>""", height=0)
@@ -110,8 +195,12 @@ def render_stats(score:int, end_ts:float, hints:int):
           if (el) el.textContent = rem.toString();
         }}
         update();
-        if (!window.__timerInterval) {{
-          window.__timerInterval = setInterval(update, 1000);
+        if (!window.__timerIntervalMain) {{
+          window.__timerIntervalMain = setInterval(update, 1000);
+        }} else {{
+          // Ensure timer updates if end_ts changes on rerun
+          clearInterval(window.__timerIntervalMain);
+          window.__timerIntervalMain = setInterval(update, 1000);
         }}
       }})();
     </script>
@@ -119,8 +208,8 @@ def render_stats(score:int, end_ts:float, hints:int):
 
 # ===================== 상태 기본값 =====================
 defaults = dict(page="home", started=False, score=0, best=0, used=set(), current=(None,None),
-                duration=90, threshold=0.85, hint_used_total=0, hint_shown_for=None,
-                end_time=None, reveal_text="", reveal_success=False, just_correct=False)
+                duration=90, hint_used_total=0, hint_shown_for=None, end_time=None,
+                reveal_text="", reveal_success=False, just_correct=False)
 for k,v in defaults.items():
     if k not in ss: ss[k]=v
 
@@ -132,7 +221,7 @@ def start_game():
 def process_submission(user_text: str):
     if not (ss.started and ss.current[0]): return
     prefix, answer = ss.current
-    is_correct = (fuzzy_match(user_text or "", answer) >= ss.threshold)
+    is_correct = (fuzzy_match(user_text or "", answer) >= ANSWER_THRESHOLD)
     ss.reveal_text = f"정답: {answer}"; ss.reveal_success = is_correct
     if is_correct:
         ss.score += 1; ss.best = max(ss.best, ss.score); ss.just_correct = True
@@ -156,16 +245,18 @@ def go_home():
     ss.page = "home"; ss.started = False; ss.reveal_text = ""; ss.hint_shown_for = None; play_tick_sound(False)
 
 # ===================== 화면 구성 =====================
+init_sound_manager() # 앱 시작 시 사운드 매니저 초기화
+
 if ss.page == "home":
     play_tick_sound(False)
     st.markdown("<h1 style='text-align:center'>🧩 속담 이어말하기 게임</h1>", unsafe_allow_html=True)
-    st.markdown(f"<p style='text-align:center'>제한 시간 안에 많이 맞혀보세요! (총 {TOTAL_Q}문제, 오타 일부 허용)</p>", unsafe_allow_html=True)
+    st.markdown(f"<p style='text-align:center'>제한 시간 안에 많이 맞혀보세요! (총 {TOTAL_Q}문제)</p>", unsafe_allow_html=True)
     _, mid, _ = st.columns([1,2,1])
     with mid:
-        st.subheader("게임 설정"); ss.duration = st.slider("⏱️ 제한 시간(초)", 30, 300, 90, step=10)
-        ss.threshold = st.slider("🎯 정답 인정 임계값", 0.6, 0.95, 0.85, step=0.01)
+        st.subheader("게임 설정")
+        ss.duration = st.slider("⏱️ 제한 시간(초)", 30, 300, 90, step=10)
+        # 1, 2번 요청: 임계값 슬라이더와 자동재생 캡션 제거
         st.button("▶️ 게임 시작", use_container_width=True, on_click=start_game)
-    st.caption("※ 브라우저 자동재생 정책상 소리는 첫 클릭 이후 활성화됩니다.")
 
 elif ss.page == "game":
     if hasattr(st, "autorefresh"): st.autorefresh(interval=1000, key="__ticker__")
