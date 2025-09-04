@@ -16,6 +16,14 @@ st.markdown("""
 <style>
 .block-container { padding-top: 1.6rem; }
 .stTextInput input { font-size: 1.3rem; padding: 16px 14px; }
+
+/* 홈 화면 중앙 배치 래퍼 */
+.home-center{
+  min-height: 72vh;            /* 화면 높이 기준 중앙에 가깝게 */
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -76,7 +84,7 @@ def pick_next(used:set) -> Tuple[str,str]:
     return row["prefix"], row["answer"]
 
 # ===================== 사운드/이펙트/UI =====================
-# 오디오 매니저 (WebAudio + HTMLAudio 이중 백업)
+# 오디오 매니저 (WebAudio + HTMLAudio 이중 백업) — 고정 key로 삽입하여 rerun에도 유지
 SOUND_MANAGER_HTML = """
 <script>
 (function () {
@@ -119,11 +127,14 @@ SOUND_MANAGER_HTML = """
       document.removeEventListener("click", unlockHandler);
       document.removeEventListener("keydown", unlockHandler);
       document.removeEventListener("touchstart", unlockHandler);
+      document.removeEventListener("pointerdown", unlockHandler);
     }
   };
   document.addEventListener("click", unlockHandler);
   document.addEventListener("keydown", unlockHandler);
   document.addEventListener("touchstart", unlockHandler, { passive: true });
+  document.addEventListener("pointerdown", unlockHandler);
+
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) ensureInit();
   });
@@ -186,7 +197,8 @@ SOUND_MANAGER_HTML = """
 })();
 </script>
 """
-html(SOUND_MANAGER_HTML, height=0)
+# 👇 동일한 컴포넌트 인스턴스를 유지하기 위해 key 고정
+html(SOUND_MANAGER_HTML, height=0, key="soundmgr")
 
 def control_ticking_sound(running: bool):
     cmd = (
@@ -291,18 +303,10 @@ def go_home():
 # ===================== 화면 구성 =====================
 if ss.page == "home":
     control_ticking_sound(False)
-    # 메인 화면 중앙 정렬
-    st.markdown("""
-    <style>
-    div[data-testid="stVerticalBlock"] > [data-testid="stVerticalBlock"] > [data-testid="stVerticalBlock"] > [data-testid="stVerticalBlock"] {
-        min-height: 70vh;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-    
+
+    # 홈 화면을 중앙으로 배치하는 래퍼 시작
+    st.markdown('<div class="home-center">', unsafe_allow_html=True)
+
     st.markdown("<h1 style='text-align:center'>🧩 속담 이어말하기 게임</h1>", unsafe_allow_html=True)
     st.markdown(f"<p style='text-align:center'>제한 시간 안에 많이 맞혀보세요! (총 {TOTAL_Q}문제)</p>", unsafe_allow_html=True)
     
@@ -311,6 +315,9 @@ if ss.page == "home":
         st.subheader("게임 설정")
         ss.duration = st.slider("⏱️ 제한 시간(초)", 30, 300, 90, step=10)
         st.button("▶️ 게임 시작", use_container_width=True, on_click=start_game)
+
+    # 래퍼 종료
+    st.markdown('</div>', unsafe_allow_html=True)
 
 elif ss.page == "game":
     if hasattr(st, "autorefresh"): st.autorefresh(interval=1000, key="__ticker__")
