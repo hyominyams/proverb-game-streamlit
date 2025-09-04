@@ -71,17 +71,15 @@ def pick_next(used:set) -> Tuple[str,str]:
     row = random.choice(remain)
     return row["prefix"], row["answer"]
 
-# ===================== 사운드/이펙트/UI (사운드 로직 통합) =====================
+# ===================== 사운드/이펙트/UI (최종 통합) =====================
 def render_stats_and_sound_manager(score: int, end_ts: float, hints: int, tick_sound_on: bool, play_correct_now: bool):
     now_rem = max(0, int(round(end_ts - time.time()))) if end_ts else 0
-    
-    # Python 값을 JavaScript로 전달하기 위한 변환
     tick_sound_on_js = str(tick_sound_on).lower()
     play_correct_now_js = str(play_correct_now).lower()
     end_ts_js = int(end_ts * 1000) if end_ts else 0
 
     html(f"""
-    <div id="stats-container">
+    <div class="stats">
       <div class="card"><div class="label">점수</div><div class="value">{score}</div></div>
       <div class="card"><div class="label">남은 시간</div><div class="value"><span id="timer_div">{now_rem}</span>s</div></div>
       <div class="card"><div class="label">힌트 사용</div><div class="value">{hints}/2</div></div>
@@ -94,17 +92,14 @@ def render_stats_and_sound_manager(score: int, end_ts: float, hints: int, tick_s
     </style>
     <script>
     (function() {{
-        // --- 1. 사운드 매니저 초기화 (최초 1회만 실행) ---
         if (!window.soundManager) {{
-            const sm = {{}};
-            sm.audioCtx = null;
-            
+            const sm = {{ audioCtx: null, tickInterval: null }};
             const initAudioContext = () => {{
                 if (!sm.audioCtx) {{
                     try {{
                         sm.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                        if (sm.audioCtx.state === 'suspended') {{ sm.audioCtx.resume(); }}
-                    }} catch (e) {{ console.error("오디오 컨텍스트 초기화 실패", e); }}
+                        if (sm.audioCtx.state === 'suspended') sm.audioCtx.resume();
+                    }} catch (e) {{ console.error("AudioContext not supported"); }}
                 }}
             }};
             document.addEventListener('click', initAudioContext, {{ once: true }});
@@ -132,40 +127,33 @@ def render_stats_and_sound_manager(score: int, end_ts: float, hints: int, tick_s
                     o.start(t + i * 0.12); o.stop(t + i * 0.12 + 0.2);
                 }});
             }};
-
-            sm.tickInterval = null;
+            
             sm.startTicking = () => {{ if (!sm.tickInterval) sm.tickInterval = setInterval(sm.playTick, 1000); }};
             sm.stopTicking = () => {{ if (sm.tickInterval) {{ clearInterval(sm.tickInterval); sm.tickInterval = null; }} }};
             window.soundManager = sm;
         }}
 
-        // --- 2. 파이썬의 신호에 따라 매번 실행되는 로직 ---
-        const tickOn = {tick_sound_on_js};
-        const playCorrect = {play_correct_now_js};
+        if ({tick_sound_on_js}) window.soundManager.startTicking();
+        else window.soundManager.stopTicking();
+
+        if ({play_correct_now_js}) window.soundManager.playCorrect();
+
         const endTs = {end_ts_js};
-
-        if (tickOn) {{ window.soundManager.startTicking(); }}
-        else {{ window.soundManager.stopTicking(); }}
-
-        if (playCorrect) {{ window.soundManager.playCorrect(); }}
-
         const timerDiv = document.getElementById('timer_div');
         const updateTimer = () => {{
             if (!endTs || !timerDiv) return;
             const rem = Math.max(0, Math.round((endTs - Date.now()) / 1000));
             timerDiv.textContent = rem.toString();
         }};
+        if (window.mainTimerInterval) clearInterval(window.mainTimerInterval);
         updateTimer();
-        // 매번 인터벌을 새로 설정하지 않도록 가드 추가
-        if (!window.mainTimerInterval) {{
-            window.mainTimerInterval = setInterval(updateTimer, 1000);
-        }}
+        window.mainTimerInterval = setInterval(updateTimer, 1000);
     }})();
     </script>
     """, height=118)
 
 def flash_answer_overlay(text:str, success:bool):
-    color = "#10b981" if success else "#ef4444"; html(f"""...""", height=0) # 내용은 생략
+    color = "#10b981" if success else "#ef4444"; html(f"""<style>@keyframes pop{{0%{{transform:scale(.9);opacity:.0;}}50%{{transform:scale(1.03);opacity:1;}}100%{{transform:scale(1.0);opacity:1;}}}}</style><div id="ansflash" style="position:fixed;left:50%;top:12%;transform:translateX(-50%);background:{color};color:white;padding:10px 18px;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.2);font-size:18px;font-weight:700;z-index:9999;animation:pop .25s ease-out;">{text}</div><script>setTimeout(()=>{{const el=document.getElementById('ansflash');if(el)el.remove();}},1200);</script>""", height=0)
 
 # ===================== 상태 기본값 =====================
 defaults = dict(page="home", started=False, score=0, best=0, used=set(), current=(None,None),
